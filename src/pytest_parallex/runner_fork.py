@@ -32,6 +32,12 @@ import pytest
 
 from pytest_parallex._safety import ForkUnsafe, assert_forkable
 from pytest_parallex.scheduler import group_by_scope
+from pytest_parallex.session_scope import (
+    detach_in_child,
+    session_fixture_names,
+    setup_session_fixtures,
+    teardown_session_fixtures,
+)
 
 if TYPE_CHECKING:
     from _pytest.reports import TestReport
@@ -71,11 +77,34 @@ class ForkRunner:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
 
+        # Run session-scoped fixtures HERE, in the controller, so `scope="session"` means
+        # once — not once per worker as it does under xdist. Children inherit the cached
+        # results through the fork and never re-run them. See session_scope.py.
+        self.config._parallex_session = session  # type: ignore[attr-defined]
+
+        eager = None
+        if self.config.getoption("parallex_session_scope"):
+            names = session_fixture_names(session)
+            if names:
+                eager = setup_session_fixtures(session, names)
+                if eager.names and os.environ.get("PARALLEX_TRACE"):
+                    _trace(f"session fixtures set up once in controller: {', '.join(eager.names)}")
+                for name, err in eager.failures:
+                    _trace(f"session fixture {name!r} failed in the controller ({err}); "
+                           f"leaving it to the worker that needs it")
+
         try:
             assert_forkable()
         except ForkUnsafe as exc:
+            hint = (
+                " A session fixture set up above may have started it — that setup runs "
+                "pre-fork by design; use --parallex-no-session-scope to defer it to the "
+                "workers."
+                if eager and eager.names
+                else ""
+            )
             raise pytest.UsageError(
-                f"--parallel=fork requires a quiet process at fork time, but {exc}. "
+                f"--parallel=fork requires a quiet process at fork time, but {exc}.{hint} "
                 f"Move the offending setup into a fixture so it runs after the fork, or "
                 f"use --parallel=process."
             ) from exc
@@ -83,6 +112,17 @@ class ForkRunner:
         groups = group_by_scope(session.items)
         children = self._fork_children(groups)
         failed = self._collect_reports(session, children)
+
+        # Only the controller reaches here — children os._exit inside _fork_children — so
+        # the session fixtures are finalized exactly once, after every worker is done with
+        # them. Children hold inherited *copies*; letting one finalize would stop a server
+        # its siblings are still using.
+        if eager is not None:
+            for name, err in teardown_session_fixtures(session):
+                sys.stderr.write(
+                    f"\npytest-parallex: session fixture {name!r} failed to tear down: {err}\n"
+                )
+                failed += 1
 
         self.config.hook.pytest_parallex_teardown(
             config=self.config, data=self.config._parallel_setup_data
@@ -142,6 +182,10 @@ class ForkRunner:
 
         self.config.pluginmanager.register(_ReportCollector(_record), "parallel-report-collector")
 
+        # The controller owns the session fixtures it set up pre-fork; this child must not
+        # finalize its inherited copies. See session_scope.detach_in_child.
+        detach_in_child(self.config._parallex_session)  # type: ignore[attr-defined]
+
         trace = os.environ.get("PARALLEX_TRACE")
 
         while True:
@@ -154,6 +198,12 @@ class ForkRunner:
             if trace:
                 _trace(f"{worker_id} claimed group {index} ({len(group)} tests) t={time.monotonic():.2f}")
             for i, item in enumerate(group):
+                # nextitem=None at a group's end tears down every scope above the item,
+                # session included — which would make the next group this worker claims
+                # rebuild it. That is safe only because detach_in_child() already emptied
+                # the Session's finalizer list: the unwind reaches the Session and finds
+                # nothing to run, so cached_result survives for the next group. Module and
+                # class scopes still tear down properly, which is what we want.
                 nextitem = group[i + 1] if i + 1 < len(group) else None
                 item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
             if trace:

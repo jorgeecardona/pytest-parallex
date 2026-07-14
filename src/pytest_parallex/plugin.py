@@ -31,6 +31,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default="auto",
         help="Number of parallel workers (default: auto = CPU count).",
     )
+    group.addoption(
+        "--parallex-no-session-scope",
+        dest="parallex_session_scope",
+        action="store_false",
+        default=True,
+        help=(
+            "Don't set session-scoped fixtures up in the controller before forking. "
+            "Restores xdist's behaviour, where scope='session' runs once per worker. "
+            "Use when a session fixture starts a thread or opens a connection and so "
+            "cannot survive the fork."
+        ),
+    )
 
 
 @pytest.hookimpl(trylast=True)
