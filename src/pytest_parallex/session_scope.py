@@ -49,12 +49,51 @@ class EagerSetupResult:
         return not self.failures
 
 
+#: A fixture that (transitively) wants this is per-WORKER, not per-session, by definition —
+#: its whole purpose is to differ between workers. See is_worker_scoped.
+WORKER_MARKER = "worker_id"
+
+
+def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
+    """True if this fixture depends on ``worker_id``, directly or through another fixture.
+
+    This is the line between the two scopes xdist conflates. ``worker_id`` exists precisely
+    to differ per worker, so anything downstream of it *cannot* be hoisted into the
+    controller — one shared value is the one thing it must not be. Everything else that
+    says ``scope="session"`` means it.
+
+    Requiring ``worker_id`` is a better marker than a decorator because suites already
+    write it that way. paas's own fixture is the archetype::
+
+        @pytest.fixture(scope="session")
+        def database_url(worker_id): ...   # carves paas_test_gw0, _gw1, ... per worker
+
+    It is declared session-scoped, but only because that is what xdist's session *means*.
+    Hoisting it to the controller hands every worker one database, and a suite whose
+    per-test fixture runs create_all/drop_all then wipes its siblings' schema mid-test —
+    observed exactly that: `relation "users" does not exist`.
+    """
+    if name == WORKER_MARKER:
+        return True
+    if _depth > 10:  # a cycle would be a pytest bug, but don't hang on one
+        return False
+    defs = item.session._fixturemanager.getfixturedefs(name, item)
+    if not defs:
+        return False
+    return any(
+        is_worker_scoped(dep, item, _depth + 1) for dep in getattr(defs[-1], "argnames", ())
+    )
+
+
 def session_fixture_names(session: pytest.Session) -> list[str]:
-    """Every session-scoped fixture that some collected test actually needs.
+    """Session-scoped fixtures that some collected test needs AND that are hoistable.
 
     Walks each item's fixture closure rather than the whole registry: a suite can define
     session fixtures that nothing in this run requests, and setting those up eagerly would
     boot resources the run never uses — the opposite of the point.
+
+    Fixtures downstream of ``worker_id`` are excluded and left to the workers; see
+    ``is_worker_scoped``.
     """
     names: list[str] = []
     seen: set[str] = set()
@@ -70,7 +109,7 @@ def session_fixture_names(session: pytest.Session) -> list[str]:
             defs = item.session._fixturemanager.getfixturedefs(name, item)
             if not defs:
                 continue
-            if defs[-1].scope == "session":
+            if defs[-1].scope == "session" and not is_worker_scoped(name, item):
                 names.append(name)
     return names
 

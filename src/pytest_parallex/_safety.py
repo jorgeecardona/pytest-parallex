@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -16,6 +18,41 @@ import pytest
 
 class ForkUnsafe(Exception):
     """The process cannot be safely forked. The message names the offender."""
+
+
+def quiesce_known_threads() -> list[object]:
+    """Stop background threads we know how to restart. Returns them, for restarting.
+
+    ``fork()`` needs a single-threaded process, but a test suite is single-threaded only
+    until some import starts a helper thread — and refusing to fork because of one is
+    useless in practice. The common offender by far is the stdlib's logging
+    ``QueueListener``: any app configuring a ``QueueHandler`` gets a ``_monitor`` thread at
+    import, litestar included (``litestar.logging.standard.LoggingQueueListener`` starts one
+    in its ``__init__``).
+
+    A ``QueueListener`` is safe to bounce because it says so itself: ``stop()`` drains the
+    queue and joins the thread, ``start()`` spins a fresh one. So we stop them before the
+    fork and restart them after, in the parent and in every child.
+
+    We only touch threads we can identify AND restart. Anything else still fails
+    ``assert_forkable`` — guessing at a thread we don't understand is how children deadlock.
+    """
+    stopped: list[object] = []
+    for thread in threading.enumerate():
+        if thread is threading.main_thread() or not thread.is_alive():
+            continue
+        target = getattr(thread, "_target", None)
+        owner = getattr(target, "__self__", None)
+        if isinstance(owner, logging.handlers.QueueListener):
+            owner.stop()
+            stopped.append(owner)
+    return stopped
+
+
+def restart_quiesced(listeners: list[object]) -> None:
+    """Restart what ``quiesce_known_threads`` stopped. Safe in parent and child alike."""
+    for listener in listeners:
+        listener.start()  # type: ignore[attr-defined]
 
 
 def assert_forkable() -> None:
