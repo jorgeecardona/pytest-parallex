@@ -18,17 +18,20 @@ held to the same contract: pure imports and CPU work, no I/O handles.
 
 from __future__ import annotations
 
+import ctypes
+import multiprocessing
 import os
 import pickle
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
 
 from pytest_parallex._safety import ForkUnsafe, assert_forkable
-from pytest_parallex.scheduler import schedule_by_scope
+from pytest_parallex.scheduler import group_by_scope
 
 if TYPE_CHECKING:
     from _pytest.reports import TestReport
@@ -41,7 +44,6 @@ class _Child:
     pid: int
     worker_id: str
     report_path: str
-    num_items: int
 
 
 class ForkRunner:
@@ -49,7 +51,12 @@ class ForkRunner:
         self.config = config
         self.num_workers = num_workers
 
-    @pytest.hookimpl(trylast=True)
+    # tryfirst is load-bearing: pytest_runtestloop is a firstresult hook, so the first
+    # impl to return non-None wins and the rest never run. Registering trylast hands the
+    # loop to pytest's builtin, which returns True — and this runner silently never
+    # executes while every test still passes, serially. That failure is invisible except
+    # as a suspiciously low core count.
+    @pytest.hookimpl(tryfirst=True)
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
         if session.testsfailed and not session.config.option.continue_on_collection_errors:
             raise session.Interrupted(
@@ -73,8 +80,8 @@ class ForkRunner:
                 f"use --parallel=process."
             ) from exc
 
-        chunks = [c for c in schedule_by_scope(session.items, self.num_workers) if c]
-        children = self._fork_children(session, chunks)
+        groups = group_by_scope(session.items)
+        children = self._fork_children(groups)
         failed = self._collect_reports(session, children)
 
         self.config.hook.pytest_parallex_teardown(
@@ -84,9 +91,20 @@ class ForkRunner:
             session.testsfailed += failed
         return True
 
-    def _fork_children(self, session: pytest.Session, chunks: list[list[pytest.Item]]) -> list[_Child]:
+    def _fork_children(self, groups: list[list[pytest.Item]]) -> list[_Child]:
+        """Fork the workers and let them race for groups off a shared counter.
+
+        The counter lives in shared memory and is created *before* the fork, so every
+        child inherits the same one and claims the next group by atomically bumping it.
+        That makes this a dynamic queue rather than a static deal, which matters more
+        than it sounds: a static deal has to guess a group's cost from its test count,
+        and on a suite whose modules ranged 0.1s to 167s that guess left the slowest
+        worker holding 239s of work against a greedy queue's 167s.
+        """
+        claim = multiprocessing.Value(ctypes.c_int, 0)  # index of the next unclaimed group
         children: list[_Child] = []
-        for i, chunk in enumerate(chunks):
+
+        for i in range(min(self.num_workers, len(groups))):
             worker_id = f"f{i}"
             fd, path = tempfile.mkstemp(prefix=f"pytest-parallex-{worker_id}-", suffix=".reports")
             os.close(fd)
@@ -96,18 +114,22 @@ class ForkRunner:
                 # --- child ---
                 code = 1
                 try:
-                    code = self._run_chunk(session, chunk, worker_id, path)
+                    code = self._run_claimed(groups, claim, worker_id, path)
                 finally:
                     # os._exit: skip atexit/flush handlers, which belong to the parent's
                     # copy of the world and would double-run here.
                     os._exit(code)
-            children.append(_Child(pid=pid, worker_id=worker_id, report_path=path, num_items=len(chunk)))
+            children.append(_Child(pid=pid, worker_id=worker_id, report_path=path))
         return children
 
-    def _run_chunk(
-        self, session: pytest.Session, chunk: list[pytest.Item], worker_id: str, path: str
+    def _run_claimed(
+        self,
+        groups: list[list[pytest.Item]],
+        claim,  # multiprocessing.Value — no public type to annotate against
+        worker_id: str,
+        path: str,
     ) -> int:
-        """Run one chunk in the forked child and pickle its reports to ``path``."""
+        """Claim groups until the queue drains, then pickle this worker's reports."""
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
 
         # The child must not re-enter this runner's runtestloop, and must not emit the
@@ -120,9 +142,22 @@ class ForkRunner:
 
         self.config.pluginmanager.register(_ReportCollector(_record), "parallel-report-collector")
 
-        for i, item in enumerate(chunk):
-            nextitem = chunk[i + 1] if i + 1 < len(chunk) else None
-            item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+        trace = os.environ.get("PARALLEX_TRACE")
+
+        while True:
+            with claim.get_lock():
+                index = claim.value
+                claim.value += 1
+            if index >= len(groups):
+                break
+            group = groups[index]
+            if trace:
+                _trace(f"{worker_id} claimed group {index} ({len(group)} tests) t={time.monotonic():.2f}")
+            for i, item in enumerate(group):
+                nextitem = group[i + 1] if i + 1 < len(group) else None
+                item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+            if trace:
+                _trace(f"{worker_id} finished group {index} t={time.monotonic():.2f}")
 
         with open(path, "wb") as fh:
             pickle.dump(collected, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -143,21 +178,23 @@ class ForkRunner:
             finally:
                 _unlink_quietly(child.report_path)
 
-            if status != 0 and not payload:
-                # A child that died without reporting would otherwise vanish silently —
-                # the whole point of a test runner is that nothing disappears.
-                sys.stderr.write(
-                    f"\npytest-parallex: worker {child.worker_id} died (exit status {status}) "
-                    f"with {child.num_items} test(s) unreported\n"
-                )
-                failed += 1
-                continue
-
             for _when, raw in payload:
                 report = TestReport._from_json(raw)
                 session.config.hook.pytest_runtest_logreport(report=report)
                 if report.failed:
                     failed += 1
+
+            if status != 0:
+                # A worker killed mid-group (OOM, segfault, a test calling os._exit)
+                # takes its claimed group's remaining tests with it. Those tests never
+                # report, and a runner that lets tests vanish silently is worse than
+                # useless — so this is loud and it fails the run.
+                sys.stderr.write(
+                    f"\npytest-parallex: worker {child.worker_id} died (wait status "
+                    f"{status}) after reporting {len(payload)} result(s); tests it had "
+                    f"claimed but not finished are MISSING from this run\n"
+                )
+                failed += 1
         return failed
 
 
@@ -170,6 +207,11 @@ class _ReportCollector:
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_logreport(self, report: TestReport) -> None:
         self._record(report)
+
+
+def _trace(msg: str) -> None:
+    """Write straight to fd 2, bypassing pytest's capture (which the child inherits)."""
+    os.write(2, f"[parallex] {msg}\n".encode())
 
 
 def _unlink_quietly(path: str) -> None:
