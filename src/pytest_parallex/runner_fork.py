@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pytest_parallex._safety import ForkUnsafe, assert_forkable
+from pytest_parallex._safety import (
+    ForkUnsafe,
+    assert_forkable,
+    quiesce_known_threads,
+    restart_quiesced,
+)
 from pytest_parallex.scheduler import group_by_scope
 from pytest_parallex.session_scope import (
     detach_in_child,
@@ -93,9 +98,17 @@ class ForkRunner:
                     _trace(f"session fixture {name!r} failed in the controller ({err}); "
                            f"leaving it to the worker that needs it")
 
+        # Stop the background threads we know how to restart (logging QueueListeners, which
+        # litestar and anything using QueueHandler start at import). Refusing to fork over
+        # one bounceable logging thread would make this runner useless on real suites.
+        quiesced = quiesce_known_threads()
+        if quiesced and os.environ.get("PARALLEX_TRACE"):
+            _trace(f"quiesced {len(quiesced)} logging listener(s) for the fork")
+
         try:
             assert_forkable()
         except ForkUnsafe as exc:
+            restart_quiesced(quiesced)
             hint = (
                 " A session fixture set up above may have started it — that setup runs "
                 "pre-fork by design; use --parallex-no-session-scope to defer it to the "
@@ -110,7 +123,8 @@ class ForkRunner:
             ) from exc
 
         groups = group_by_scope(session.items)
-        children = self._fork_children(groups)
+        children = self._fork_children(groups, quiesced)
+        restart_quiesced(quiesced)  # controller gets its logging back
         failed = self._collect_reports(session, children)
 
         # Only the controller reaches here — children os._exit inside _fork_children — so
@@ -131,7 +145,9 @@ class ForkRunner:
             session.testsfailed += failed
         return True
 
-    def _fork_children(self, groups: list[list[pytest.Item]]) -> list[_Child]:
+    def _fork_children(
+        self, groups: list[list[pytest.Item]], quiesced: list[object]
+    ) -> list[_Child]:
         """Fork the workers and let them race for groups off a shared counter.
 
         The counter lives in shared memory and is created *before* the fork, so every
@@ -154,6 +170,8 @@ class ForkRunner:
                 # --- child ---
                 code = 1
                 try:
+                    # The child inherited a stopped listener; give it working logging back.
+                    restart_quiesced(quiesced)
                     code = self._run_claimed(groups, claim, worker_id, path)
                 finally:
                     # os._exit: skip atexit/flush handlers, which belong to the parent's
