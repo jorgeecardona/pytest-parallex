@@ -108,3 +108,51 @@ Open questions, in order:
    against a full-suite run.
 3. **Does the zygote matter for anyone?** It only pays where per-test setup is expensive AND
    CPU-bound. paas's setup is expensive but I/O-bound (Postgres), so it wouldn't have helped there.
+
+---
+
+# Does hoisting session fixtures buy wall time? Mostly no — 2026-07-15
+
+Written after the session-fixture hoisting feature landed, because the obvious pitch for it
+("xdist boots your container 8 times, we boot it once, so we're 8x faster on setup") is
+wrong for the same reason trap 3 above is wrong. It's worth writing down twice.
+
+## Bottom line
+
+**Hoisting saves CPU and resources, not wall time.** The reason to use it is that one
+Postgres exists instead of eight — memory, disk, Docker daemon pressure, API quota, licence
+seats — and that the fixture can be written the obvious way. Not the clock.
+
+Measured, 16 cores, 8 workers:
+
+| suite | xdist | fork | note |
+|---|---|---|---|
+| 4 modules, 64 quick tests | 1.64s | 1.13s | fork's flat startup saving |
+| 4 modules, 32 slow tests (`-n 16`) | 2.75s | **4.32s** | **fork 1.6x SLOWER** |
+| 8 modules, 2s *sleeping* session fixture | 3.16s | 2.49s | ~unchanged |
+| 8 modules, 2s *CPU-bound* session fixture | 2.16s | 1.35s | ~unchanged |
+
+## Why the fixture rows are so flat
+
+xdist boots the fixture in all 8 workers **concurrently**, on cores that were idle anyway.
+Eight 2-second boots cost ~2 seconds of wall clock, not 16. This is trap 3 again, one level
+up: *redundant work parallelises across idle cores*. Hoisting removes 14 core-seconds of
+waste and about 0.7 wall-seconds, and you only get paid for the difference if those cores
+had something better to do — i.e. if workers outnumber cores, or the resource itself
+serialises (one Docker daemon, one DB accepting CREATEs, a rate-limited API).
+
+So the honest claim is the resource one. Eight containers is 8x the RAM whether or not it
+costs 8x the seconds.
+
+## The row that loses
+
+`group_by_scope` hands each worker a whole **module**; xdist's default hands out individual
+**tests**. So fork forks `min(num_workers, len(modules))` children and a suite with 4
+modules uses 4 workers on a 16-core box, whatever `--parallel-workers` says. With enough
+per-test work to swamp the ~1.5-2.3s startup saving, xdist wins outright — 2.75s vs 4.32s
+above.
+
+This is a real ceiling, not a tuning bug: module granularity is what lets a module-scoped
+fixture stay set up for its whole module in one worker. Splitting tests across workers the
+way xdist does would give that up. It's the correct trade for the feature, and it costs
+exactly this.

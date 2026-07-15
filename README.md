@@ -1,12 +1,15 @@
 # pytest-parallex
 
-Run pytest in parallel. The difference from pytest-xdist: `scope="session"` fixtures run
-once for the whole run, not once per worker.
+Run pytest in parallel with `scope="session"` fixtures that actually run once.
 
 ```bash
 pip install pytest-parallex
 pytest --parallel=fork
 ```
+
+This is not mainly a speed tool — see [below](#is-it-faster-than-xdist). It's a simpler
+model: one container for the run instead of one per worker, and fixtures you can write the
+obvious way.
 
 ## Why
 
@@ -53,22 +56,48 @@ pytest --parallel=fork --parallel-workers=8
 
 `--parallel-workers` defaults to `auto` (CPU count).
 
-## What fork is and isn't good for
+## Is it faster than xdist?
 
-Two separate things, and only one of them scales:
+Usually not by much, and sometimes it's slower. Speed isn't the reason to use this.
 
-Skipping xdist's worker startup saves about 1.5–2.3 seconds. That's a fixed cost, so it
-doesn't grow with your suite, your imports, or your worker count. On a 3-second local run
-it's a 1.8x speedup and you notice it. On a 292-second CI suite it's under 1% and it's
-noise. The reason is that redundant imports run on cores that were idle anyway — xdist's
-N-way collection wastes CPU, not wall time, and you only get paid for removing it if those
-cores had something better to do.
+Both tools run your tests on N processes, so the parallelism is the same. Measured on 16
+cores:
 
-Reusing session fixtures is the part that scales. A 10-second container boot costs 80
-seconds across 8 xdist workers and 10 seconds here. That's the reason to use this.
+| suite | xdist | parallex fork | |
+|---|---|---|---|
+| 4 modules, 64 quick tests | 1.64s | 1.13s | fork saves worker startup |
+| 4 modules, 32 slow tests | 2.75s | **4.32s** | **fork is 1.6x slower** |
+| 8 modules, 2s session fixture | 3.16s | 2.49s | barely different |
 
-[docs/benchmarks.md](docs/benchmarks.md) has the numbers, the method, and three
-measurements that looked convincing and were wrong.
+The one where fork loses is the important one to understand. xdist hands out individual
+tests; fork hands out whole modules. So if you have fewer modules than cores, fork can't
+fill the machine — 4 modules means 4 workers no matter what you pass to
+`--parallel-workers`.
+
+And the row that looks like it should be a blowout isn't. xdist boots that 2-second fixture
+in all 8 workers, but it boots them *at the same time*, on cores that were idle anyway. 8
+boots cost about 2 seconds of wall clock, not 16. Running it once saves you real CPU, but
+CPU you weren't using isn't time you get back. (Same for imports — that's why fork's
+startup saving is a flat ~1.5–2.3s that doesn't grow with your suite. On a 3s local run you
+notice it; on a 292s CI suite it's under 1%.)
+
+## So why use it?
+
+Because `scope="session"` means session, and that gets you two things.
+
+**One copy of the resource, not N.** Eight xdist workers boot eight Postgres containers.
+That's 8x the memory, 8x the disk, 8x the pressure on the Docker daemon — and if you're
+paying per seat, per API call, or per licence, 8x that too. Here it's one, and each worker
+gets a database on it. The wall clock barely moves; the resource bill does.
+
+**You write the fixture the obvious way.** No `FileLock`, no shared tmpdir, no "am I worker
+gw0" branch. The fixture that says it runs once runs once.
+
+If your session fixtures are cheap and your suite has plenty of modules, xdist is fine and
+you should keep using it.
+
+[docs/benchmarks.md](docs/benchmarks.md) has the method and three measurements that looked
+convincing and were wrong.
 
 ## Fork safety
 
