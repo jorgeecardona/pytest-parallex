@@ -138,7 +138,8 @@ class ForkRunner:
                 failed += 1
 
         self.config.hook.pytest_parallex_teardown(
-            config=self.config, data=self.config._parallel_setup_data
+            config=self.config,
+            data=self.config._parallel_setup_data,  # type: ignore[attr-defined]
         )
         if failed:
             session.testsfailed += failed

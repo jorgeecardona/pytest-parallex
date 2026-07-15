@@ -106,18 +106,27 @@ def pytest_configure(config: pytest.Config) -> None:
 
 def _resolve_worker_count(config: pytest.Config) -> int:
     raw = config.getoption("parallel_workers")
-    if raw != "auto":
-        n = int(raw)
+    # `raw is None` shouldn't happen (the option defaults to "auto"), but getoption is
+    # typed Any | None and None is exactly the value int() cannot take — so treat it as
+    # the default rather than let it reach int().
+    if raw is not None and raw != "auto":
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            # A UsageError, not the ValueError this used to raise. Anything raised from
+            # pytest_configure that isn't a UsageError comes out as an INTERNALERROR and
+            # a traceback through pytest's guts — for a typo in a flag.
+            raise pytest.UsageError(
+                f"--parallel-workers must be an integer or 'auto', not {raw!r}"
+            ) from None
         if n < 1:
-            raise pytest.UsageError("--parallel-workers must be >= 1")
+            raise pytest.UsageError(f"--parallel-workers must be >= 1, not {n}")
         return n
 
-    # Try hook first
     result = config.hook.pytest_parallex_auto_num_workers(config=config)
     if result is not None:
         return result
 
-    # Fallback to CPU count
     return os.cpu_count() or 1
 
 
