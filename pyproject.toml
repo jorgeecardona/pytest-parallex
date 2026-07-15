@@ -2,7 +2,7 @@
 # pytest-parallex — parallel test execution where scope="session" means session:
 # the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
-version = "0.1.0"
+version = "0.1.1"
 description = "Parallel test execution for pytest where scope=\"session\" means session — fork-based warm workers that inherit session fixtures, plus thread, async and process modes"
 readme = "README.md"
 requires-python = ">=3.10"
