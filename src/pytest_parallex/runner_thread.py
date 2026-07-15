@@ -1,22 +1,31 @@
 """Thread-based parallel test runner.
 
-Uses ThreadPoolExecutor to run tests in threads sharing a single pytest
-session. Session-scoped fixtures run exactly once.
+Runs tests on plain threads that share one pytest session, so ``scope="session"``
+fixtures are built exactly once and every worker uses the same object — no fork, no
+serialization, and it works on Windows.
+
+What it cannot escape is the GIL: a suite that is genuinely CPU-bound in Python will not
+get faster here. This mode is for suites that spend their time waiting — on a network, a
+database, a subprocess — which is most test suites.
+
+The cost is that tests must tolerate sharing an address space with each other: a test
+that chdir's, monkeypatches a global, or mutates a module-level cache will be seen doing
+it by every other test running at that moment. When that bites, use ``--parallel=fork``
+(shared setup, isolated execution) or ``--parallel=process``.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Any
 
 import pytest
 
-from pytest_parallex import _worker_id_local
+from pytest_parallex._loop import raise_if_collection_failed, run_chunk
 from pytest_parallex._safety import (
-    ThreadFixtureLocking,
     ThreadLocalSetupStateProxy,
     ThreadSafeReporter,
     clear_fixture_locks,
+    install_fixture_execute_lock,
 )
 from pytest_parallex.scheduler import schedule_round_robin
 
@@ -31,15 +40,11 @@ class ThreadRunner:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
         self.config.pluginmanager.register(ThreadSafeReporter(), "thread-safe-reporter")
-        self.config.pluginmanager.register(ThreadFixtureLocking(), "thread-fixture-locking")
+        install_fixture_execute_lock()
 
     @pytest.hookimpl
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
-        if session.testsfailed and not session.config.option.continue_on_collection_errors:
-            raise session.Interrupted(
-                "%d error%s during collection"
-                % (session.testsfailed, "s" if session.testsfailed != 1 else "")
-            )
+        raise_if_collection_failed(session)
 
         if not session.items:
             return True
@@ -55,7 +60,7 @@ class ThreadRunner:
 
         for i, chunk in enumerate(chunks):
             t = threading.Thread(
-                target=self._run_chunk,
+                target=run_chunk,
                 args=(chunk, session, errors, f"w{i}"),
                 daemon=True,
             )
@@ -78,21 +83,3 @@ class ThreadRunner:
         data = getattr(self.config, "_parallel_setup_data", {})
         self.config.hook.pytest_parallex_teardown(config=self.config, data=data)
 
-    @staticmethod
-    def _run_chunk(
-        items: list[Any],
-        session: pytest.Session,
-        errors: list[BaseException],
-        worker_id: str,
-    ) -> None:
-        _worker_id_local.id = worker_id
-        try:
-            for i, item in enumerate(items):
-                # Use session as nextitem for last item to prevent premature
-                # session-scoped teardown while other threads are still running
-                nextitem = items[i + 1] if i + 1 < len(items) else session
-                item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
-                if session.shouldfail or session.shouldstop:
-                    break
-        except BaseException as exc:
-            errors.append(exc)

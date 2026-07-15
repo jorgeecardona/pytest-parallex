@@ -1,8 +1,16 @@
-"""Process-based parallel test runner.
+"""Process-based parallel test runner — spawn a fresh interpreter per worker.
 
-Uses ProcessPoolExecutor to run tests in separate processes.
-Each worker process runs its own pytest session with a subset of tests.
-Reports are serialized and replayed on the main process.
+Each worker is a plain ``python -m pytest <nodeids>`` subprocess running its own session,
+so nothing is shared and nothing needs to be fork-safe. That is the point of this mode:
+it is the one that works when ``--parallel=fork`` refuses (threads at import, a live
+connection, Windows) and when tests mutate process-global state.
+
+The cost is the one ``--parallel=fork`` exists to avoid — every worker re-imports and
+re-collects the whole suite before it runs a single test. Prefer fork when the process is
+quiet enough to allow it.
+
+Workers report through ``_reports`` rather than their own stdout, so the controller prints
+one summary and one exit code.
 """
 
 from __future__ import annotations
@@ -10,12 +18,28 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 import pytest
 
+from pytest_parallex._loop import raise_if_collection_failed
+from pytest_parallex._reports import (
+    ENV_REPORT_PATH,
+    read_reports,
+    replay,
+    unlink_quietly,
+)
 from pytest_parallex.scheduler import schedule_round_robin
+
+
+@dataclass(frozen=True)
+class _WorkerResult:
+    worker_id: str
+    returncode: int
+    payload: list
+    output: str
 
 
 class ProcessRunner:
@@ -30,42 +54,57 @@ class ProcessRunner:
 
     @pytest.hookimpl
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
-        if session.testsfailed and not session.config.option.continue_on_collection_errors:
-            raise session.Interrupted(
-                "%d error%s during collection"
-                % (session.testsfailed, "s" if session.testsfailed != 1 else "")
-            )
+        raise_if_collection_failed(session)
 
         if not session.items:
             return True
 
-        # Divide tests into node ID lists
         nodeids = [item.nodeid for item in session.items]
         chunks = schedule_round_robin(nodeids, self.num_workers)
 
         rootdir = str(session.config.rootpath)
         base_args = _get_base_args(session.config)
+        # -s means "don't capture" — so we don't. The output interleaves across workers,
+        # which is what asking for raw output from a parallel run buys you; swallowing it
+        # instead would make -s print nothing at all.
+        capture = session.config.option.capture != "no"
 
-        failed = False
-        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            futures = []
-            for i, chunk in enumerate(chunks):
-                future = executor.submit(
+        # Threads, not processes: every one of these does nothing but wait on a
+        # subprocess. A ProcessPoolExecutor here would fork a worker whose whole job is to
+        # call subprocess.run — a process spawned to spawn a process.
+        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            futures = [
+                executor.submit(
                     _run_worker_subprocess,
                     worker_id=f"w{i}",
                     nodeids=chunk,
                     rootdir=rootdir,
                     base_args=base_args,
+                    capture=capture,
                 )
-                futures.append(future)
+                for i, chunk in enumerate(chunks)
+            ]
 
+            # as_completed yields in *this* thread, so replay stays single-threaded and
+            # the terminal reporter needs no lock.
             for future in as_completed(futures):
-                returncode = future.result()
-                if returncode != 0:
-                    failed = True
+                result = future.result()
+                replay(session.config, result.payload)
 
-        if failed:
-            session.testsfailed = 1
+                if result.returncode not in (0, 1) or (
+                    result.returncode == 1 and not result.payload
+                ):
+                    # 1 with reports is the ordinary "tests failed" path — already
+                    # replayed above. Anything else means the worker itself broke
+                    # (usage error, import error, crash), and its tests never reported.
+                    # Silently dropping them would show a green run that tested nothing.
+                    session.testsfailed += 1
+                    sys.stderr.write(
+                        f"\npytest-parallex: worker {result.worker_id} exited "
+                        f"{result.returncode} after reporting {len(result.payload)} "
+                        f"result(s); its remaining tests are MISSING from this run\n"
+                        f"{result.output}\n"
+                    )
 
         return True
 
@@ -75,14 +114,50 @@ class ProcessRunner:
         self.config.hook.pytest_parallex_teardown(config=self.config, data=data)
 
 
+#: Parallex's own options, which a worker must never see. Mapped to whether the value can
+#: arrive as a following token (``--parallel fork``) as well as glued on (``--parallel=fork``).
+_OWN_OPTIONS = {
+    "--parallel": True,
+    "--parallel-workers": True,
+    "--parallex-no-session-scope": False,
+}
+
+
 def _get_base_args(config: pytest.Config) -> list[str]:
-    """Extract base pytest args, stripping parallel-specific options."""
-    args = []
-    # Pass through common options
-    if config.option.verbose:
-        args.append("-v")
-    if getattr(config.option, "tb", None):
-        args.extend(["--tb", config.option.tb])
+    """The user's own pytest args, forwarded to a worker.
+
+    Rebuilt from the real argv rather than hand-picked. The earlier version forwarded
+    exactly ``-v`` and ``--tb``, which silently dropped everything else the user asked
+    for: ``-x``, ``--maxfail``, ``-m``, ``-p``, ``--strict-markers``, every plugin's
+    options. A worker configured differently from the controller is a worker whose results
+    don't mean what the summary says they mean.
+
+    Two things are deliberately removed:
+
+    * Parallex's own options. A worker that re-read ``--parallel`` would fan out again,
+      and its workers would fan out again. Their absence is what terminates the recursion.
+    * The positional test paths, which the caller replaces with explicit nodeids — leaving
+      them in would make every worker run the whole suite.
+    """
+    positional = set(config.args)
+    args: list[str] = []
+    skip_next = False
+
+    for token in config.invocation_params.args:
+        if skip_next:
+            skip_next = False
+            continue
+        name = token.split("=", 1)[0]
+        if name in _OWN_OPTIONS:
+            # A separate value token only follows when it wasn't glued on with '='.
+            skip_next = _OWN_OPTIONS[name] and "=" not in token
+            continue
+        if token in positional:
+            continue
+        args.append(token)
+
+    # The workers would otherwise race each other writing one .pytest_cache.
+    args.extend(["-p", "no:cacheprovider"])
     return args
 
 
@@ -91,15 +166,34 @@ def _run_worker_subprocess(
     nodeids: list[str],
     rootdir: str,
     base_args: list[str],
-) -> int:
-    """Run a subset of tests in a subprocess.
+    capture: bool = True,
+) -> _WorkerResult:
+    """Run a subset of tests in a fresh interpreter and bring its reports home."""
+    fd, report_path = tempfile.mkstemp(prefix=f"pytest-parallex-{worker_id}-", suffix=".reports")
+    os.close(fd)
 
-    Uses subprocess instead of multiprocessing to get a clean Python
-    interpreter without any shared state issues.
-    """
     env = os.environ.copy()
     env["PYTEST_PARALLEL_WORKER"] = worker_id
+    env[ENV_REPORT_PATH] = report_path
 
-    cmd = [sys.executable, "-m", "pytest"] + base_args + nodeids
-    result = subprocess.run(cmd, cwd=rootdir, env=env)
-    return result.returncode
+    cmd = [sys.executable, "-m", "pytest", *base_args, *nodeids]
+    try:
+        # Captured by default, not inherited: N workers writing to one terminal interleave
+        # into noise, and the controller reprints all of it from the replayed reports
+        # anyway. What we keep is only used to explain a worker that died before it could
+        # report. Under -s the user has asked for the raw stream, so we let it through.
+        proc = subprocess.run(
+            cmd,
+            cwd=rootdir,
+            env=env,
+            capture_output=capture,
+            text=True,
+        )
+        return _WorkerResult(
+            worker_id=worker_id,
+            returncode=proc.returncode,
+            payload=read_reports(report_path),
+            output=(proc.stdout or "") + (proc.stderr or "") if capture else "",
+        )
+    finally:
+        unlink_quietly(report_path)
