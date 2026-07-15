@@ -5,9 +5,10 @@ All notable changes to this project are documented here.
 The version in `pyproject.toml` is the single source of truth, and merging a version bump
 to `main` publishes it — see "Releasing" in the README.
 
-## 0.1.0 — unreleased
+## 0.1.1 — first release
 
-First release.
+The first published version is 0.1.1, not 0.1.0: `version-guard` requires a code change to
+carry a version bump, and 0.1.0 never left this repo. Nothing was released as 0.1.0.
 
 ### Added
 
