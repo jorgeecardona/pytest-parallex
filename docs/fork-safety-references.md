@@ -394,3 +394,38 @@ goal, it's the 3.14 default, and it sidesteps the thread hazard by construction.
 the *rationale* for the 3.14 default, but the actual saving depends on how much of the warm state is
 imports (inheritable) vs. connections (not). Measure it. Also unverified: whether the specific test
 suite's plugins spawn threads at import time — check with `threading.active_count()` after preload.
+
+---
+
+## Known fuse: `getfixturevalue` during "teardown" breaks on pytest 10.1
+
+`session_scope.setup_session_fixtures` hoists fixtures by borrowing a real item's request
+and calling `request.getfixturevalue(name)` from `pytest_runtestloop` — before any test has
+run. pytest reads that state as *teardown*, because the item was never pushed onto the
+setup stack, and since 9.x it warns:
+
+```
+PytestRemovedIn10Warning: Calling request.getfixturevalue("postgres_server") during
+teardown is deprecated.
+```
+
+It still works today only by a technicality. From `_pytest/fixtures.py`:
+
+```python
+if not self.session._setupstate.is_node_active(self.node):
+    # TODO(pytest10.1): Remove the `warn` and `if` and call
+    # _raise_teardown_lookup_error unconditionally.
+    warnings.warn(FIXTURE_GETFIXTUREVALUE_DURING_TEARDOWN.format(argname=argname), ...)
+    if subrequest.node not in self.session._setupstate.stack:
+        self._raise_teardown_lookup_error(argname)
+```
+
+`self.node` is `session.items[0]`, which is *not* active — so the warning fires. The raise
+is skipped only because `subrequest.node` for a session-scoped fixture is the Session, and
+`_activate_session_on_setup_stack` put the Session on the stack. **In 10.1 the `if` goes
+away and the error is raised unconditionally**, which takes the whole hoisting feature with
+it — the one thing this project is for.
+
+The shape of the fix is to make the borrowed item genuinely active rather than to make the
+Session merely present, so `is_node_active(item)` is true while the hoisted fixtures are
+built. Worth doing before pytest 10.1, not after.
