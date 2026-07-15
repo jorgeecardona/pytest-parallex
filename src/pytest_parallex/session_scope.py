@@ -49,9 +49,16 @@ class EagerSetupResult:
         return not self.failures
 
 
-#: A fixture that (transitively) wants this is per-WORKER, not per-session, by definition —
-#: its whole purpose is to differ between workers. See is_worker_scoped.
-WORKER_MARKER = "worker_id"
+#: A fixture that (transitively) wants one of these is per-WORKER, not per-session, by
+#: definition — its whole purpose is to differ between workers. See is_worker_scoped.
+#:
+#: Both names, because the plugin answers to both: ``worker_id`` is the name existing
+#: suites already write (and the reason a name, rather than a decorator, is the marker),
+#: while ``parallex_worker_id`` is the alias for suites that would rather not rely on
+#: winning a fixture-name race with pytest-xdist. Marking on only one would make the
+#: alias a quiet trap: a ``database_url(parallex_worker_id)`` would look per-worker,
+#: be hoisted anyway, and hand every worker the same database.
+WORKER_MARKERS = frozenset({"worker_id", "parallex_worker_id"})
 
 
 def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
@@ -73,7 +80,7 @@ def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     per-test fixture runs create_all/drop_all then wipes its siblings' schema mid-test —
     observed exactly that: `relation "users" does not exist`.
     """
-    if name == WORKER_MARKER:
+    if name in WORKER_MARKERS:
         return True
     if _depth > 10:  # a cycle would be a pytest bug, but don't hang on one
         return False

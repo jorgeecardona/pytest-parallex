@@ -56,7 +56,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # A spawned worker (--parallel=process) is an ordinary pytest run that happens to have
     # been handed a report path. It captures its reports for the controller to replay
     # instead of printing them, and it never fans out itself — the controller does not
-    # forward --parallel, so `mode` is None here and we return below.
+    # forward --parallel, so `mode` is None for a worker.
     report_path = os.environ.get(ENV_REPORT_PATH)
     if report_path:
         config.pluginmanager.register(ReportWriter(report_path), "parallex-report-writer")
@@ -65,6 +65,17 @@ def pytest_configure(config: pytest.Config) -> None:
         )
 
     mode = config.getoption("parallel_mode", default=None)
+
+    # Registered for the controller *and* for a spawned worker: `mode` is None in the
+    # worker, and returning before this left it without the fixtures — a test asking for
+    # worker_id then failed with "fixture not found", but only under --parallel=process,
+    # and only in the worker, where the controller replays the error as a bare setup
+    # failure.
+    if mode is not None or report_path:
+        # Late, so our worker_id beats xdist's — see WorkerIdFixtures. Never for a plain
+        # xdist run, which must keep xdist's.
+        config.pluginmanager.register(WorkerIdFixtures(), "parallex-worker-id")
+
     if mode is None:
         return
 
@@ -113,24 +124,8 @@ def _resolve_worker_count(config: pytest.Config) -> int:
 # --- Fixtures ---
 
 
-@pytest.fixture
-def parallex_worker_id(request: pytest.FixtureRequest) -> str:
-    """The worker running this test: 'f0'/'w0'/'a0'…, or 'main' if not parallel.
-
-    Named ``parallex_``-something because pytest-xdist already ships a fixture called
-    ``worker_id``, and a suite that parallelises is exactly the suite likely to have xdist
-    installed alongside this. Two plugins claiming one fixture name resolve by
-    registration order, and xdist won: ours silently returned xdist's ``'master'`` — the
-    right shape, the wrong answer, no error anywhere. A distinct name cannot lose that
-    race.
-
-    Deliberately *not* session-scoped, in every mode:
-
-    * thread/async share one session across workers, so a session-scoped value would be
-      computed once by whichever worker asked first and then handed to all the others.
-    * under fork, ``--parallex-session-scope`` sets session fixtures up in the controller
-      *before* the fork — so a session-scoped ``worker_id`` would resolve to 'main' there
-      and every child would inherit that answer.
+def _current_worker_id(config: pytest.Config) -> str:
+    """Who is running this test: 'f0'/'w0'/'a0'…, or 'main' if not parallel.
 
     The two runner families report their identity differently — fork sets a config
     attribute in the child (its own process, so there is nothing to isolate it from),
@@ -141,7 +136,61 @@ def parallex_worker_id(request: pytest.FixtureRequest) -> str:
     worker = get_worker_id()
     if worker != "main":
         return worker
-    return getattr(request.config, "_parallel_worker_id", "main")
+    return getattr(config, "_parallel_worker_id", "main")
+
+
+class WorkerIdFixtures:
+    """Provides ``worker_id``, registered late enough to beat pytest-xdist to the name.
+
+    ``worker_id`` is xdist's name, and taking it is deliberate rather than careless.
+    ``session_scope.is_worker_scoped`` uses a dependency on it as the marker for "this
+    fixture is per-worker, do not hoist it into the controller" — and that only works
+    because suites *already write it that way*: ``def database_url(worker_id): ...`` is
+    what an xdist suite looks like today. A name of our own would mark nothing that
+    already exists.
+
+    So it must be *our* value, and there the plugin was losing on a technicality.
+    Fixtures from two plugins resolve by registration order, pytest11 entry points load
+    alphabetically, and 'parallex' sorts before 'xdist' — so xdist's ``worker_id``
+    registered second and won. Every test silently got xdist's ``'master'``.
+
+    That is not cosmetic. ``worker_id`` marks a fixture as per-worker, so
+    ``database_url(worker_id)`` is correctly left un-hoisted — and then all four workers
+    resolve ``worker_id`` to the same ``'master'`` and carve the same database, wiping
+    each other's schemas. Right shape, wrong answer, no error: the exact failure the
+    marker exists to prevent.
+
+    Registering here — from ``pytest_configure``, after every plugin has loaded — puts
+    us last and wins the name. Only when ``--parallel`` is active: an actual xdist run
+    must keep xdist's.
+
+    Both are ``scope="session"``, matching xdist. That is not a copied detail, it is what
+    makes the archetype legal at all: ``database_url`` is session-scoped, and a
+    session-scoped fixture may only request session-scoped fixtures. A function-scoped
+    ``worker_id`` turns ``def database_url(worker_id)`` — the exact line this is meant to
+    support — into a ``ScopeMismatch`` error.
+
+    Session scope is also the *right* answer wherever a worker is a process: under fork
+    and process each child resolves it once, in itself, and gets its own id. (It is never
+    hoisted to the controller, because requesting it is precisely what marks a fixture
+    per-worker.) Under thread and async, where all workers share one session, one cached
+    value is all a session-scoped fixture can be — so a per-worker session fixture is not
+    expressible there. That is a property of sharing an interpreter, not of this code.
+    """
+
+    @pytest.fixture(scope="session")
+    def worker_id(self, request: pytest.FixtureRequest) -> str:
+        """The parallex worker: 'f0', 'w1', 'a2'… or 'main' when not parallel.
+
+        A fixture that requests this is per-worker by definition and is never set up in
+        the controller — see ``session_scope.is_worker_scoped``.
+        """
+        return _current_worker_id(request.config)
+
+    @pytest.fixture(scope="session")
+    def parallex_worker_id(self, request: pytest.FixtureRequest) -> str:
+        """``worker_id`` under a name that cannot collide with xdist's. Same value."""
+        return _current_worker_id(request.config)
 
 
 @pytest.fixture(scope="session")

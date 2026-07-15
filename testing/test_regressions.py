@@ -258,6 +258,66 @@ class TestWorkerIdentity:
         assert all(w[0] in "wfa" and w[1:].isdigit() for w in seen), seen
 
 
+class TestWorkerScopedFixtures:
+    def test_server_is_hoisted_but_per_worker_database_is_not(self, pytester):
+        """The split the whole feature exists to make possible.
+
+        One server in the controller, one database per worker on it — what xdist's
+        filelock recipe exists to fake. It works because requesting ``worker_id`` marks a
+        fixture per-worker, so ``database_url`` is left to the workers while
+        ``postgres_server`` is hoisted.
+
+        Both halves must hold at once, and each fails differently:
+
+        * hoist ``database_url`` too and all workers share one database, then a per-test
+          create_all/drop_all wipes its siblings mid-test.
+        * hoist neither and every worker boots its own server — xdist's behaviour, and
+          the reason this project exists.
+
+        The value matters as much as the marking: while xdist's ``worker_id`` fixture
+        shadowed ours, ``database_url`` was correctly *not* hoisted and then every worker
+        resolved ``worker_id`` to xdist's ``'master'`` and carved the same database
+        anyway. Asserting on distinct names is what catches that; asserting on
+        pass/fail does not.
+        """
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture(scope="session")
+            def postgres_server():
+                with open("servers", "a") as fh:
+                    fh.write("1")
+                return "postgres://host"
+
+            @pytest.fixture(scope="session")
+            def database_url(worker_id, postgres_server):
+                with open("databases", "a") as fh:
+                    fh.write(worker_id + "\\n")
+                return f"{postgres_server}/test_{worker_id}"
+            """
+        )
+        pytester.makepyfile(
+            **{
+                f"test_{n}": f"def test_{n}(database_url): assert database_url"
+                for n in ("alpha", "beta", "gamma", "delta")
+            }
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=4")
+        result.assert_outcomes(passed=4)
+
+        servers = (pytester.path / "servers").read_text()
+        assert len(servers) == 1, f"server booted {len(servers)}x — it should be hoisted"
+
+        used = [w for w in (pytester.path / "databases").read_text().split() if w]
+        assert used, "database_url never ran"
+        assert "master" not in used, "resolved xdist's worker_id, not ours"
+        assert len(used) == len(set(used)), (
+            f"workers shared a database: {used} — database_url was hoisted"
+        )
+        assert all(w.startswith("f") for w in used), used
+
+
 class TestForkOutput:
     def test_controller_output_is_not_duplicated_into_children(self, pytester):
         """Output written before the fork must appear once, not once per child.
