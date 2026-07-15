@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# pytest-parallex — a pytest plugin. Single project at the repo root. Every task runs as a
+# system command via `uv run` (see .moon/toolchain.yml for why moon's Python toolchain is
+# not used). CI runs one `moon run :ci` (or `:release` on main); moon owns all task
+# ordering instead of hand-wired GitLab stages/needs.
+id: 'pytest-parallex'
+layer: 'library'
+language: 'python'
+
+tasks:
+  lint:
+    command: 'uv run ruff check src testing'
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+
+  format-check:
+    command: 'uv run ruff format --check src testing'
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+
+  typecheck:
+    command: 'uv run pyright'
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+
+  test:
+    command: 'uv run pytest -q'
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+
+  # The floor named in pyproject's `pytest>=8.1`, tested rather than asserted. This is a
+  # pytest plugin reaching deep into pytest's internals, and those internals move between
+  # minors in ways the locked version can't show: getfixturedefs took a nodeid until 8.1
+  # and a Node after (fork mode dies on 8.0), and 9.1 added an assertion to
+  # FixtureDef.execute that turned a silent thread race into a crash. Both were found this
+  # way, and neither was visible to a single-version run. ~10s.
+  test-pytest-floor:
+    command: 'uv run --isolated --with pytest==8.1.0 pytest -q'
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+
+  build:
+    command: 'uv build --out-dir dist'
+    deps: ['~:test']
+    inputs: ['src/**/*.py', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE']
+    outputs: ['dist']
+
+  # CI-side enforcement of "a src/ change carries a version bump" (the non-bypassable
+  # counterpart to the pre-commit auto-bump). Reads the diff base from CI env, so it is
+  # git-state dependent, not file-input dependent -> not cacheable.
+  version-guard:
+    command: 'sh scripts/ci-version-guard'
+    options:
+      cache: false
+
+  # The single aggregate gate: the whole CI check graph in one target.
+  # No docs task here (unlike musil): this project's docs are README + docs/*.md, with
+  # no mkdocs build to fail. format-check is intentionally out of the gate until the
+  # tree is ruff-format-clean; run `make format` and add it here once it is.
+  ci:
+    command: 'noop'
+    deps:
+      - '~:lint'
+      - '~:typecheck'
+      - '~:test'
+      - '~:test-pytest-floor'
+      - '~:build'
+      - '~:version-guard'
+
+  # Mint a PyPI OIDC token and upload dist/*. Invoked by release (or by hand).
+  publish:
+    command: 'sh scripts/pypi-publish'
+    deps: ['~:build']
+    options:
+      cache: false
+      runInCI: false
+
+  # main-only: no-op if pyproject's version is already on PyPI; else publish.
+  # Invoked explicitly by the CI job on the default branch (`moon run :release`), so it
+  # MUST be runnable in CI -- do NOT set runInCI:false here (that makes `:release` resolve
+  # to "no tasks found" under CI). It is never part of `:ci`, so it only runs when targeted.
+  release:
+    command: 'sh scripts/release'
+    deps: ['~:ci']
+    options:
+      cache: false
