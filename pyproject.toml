@@ -1,24 +1,90 @@
-[build-system]
-requires = ["setuptools>=77.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
+# pytest-parallex — parallel test execution where scope="session" means session:
+# the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
 version = "0.1.0"
-description = "Fast parallel test execution for pytest: fork-based warm workers, threads, or processes"
+description = "Parallel test execution for pytest where scope=\"session\" means session — fork-based warm workers that inherit session fixtures, plus thread, async and process modes"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["pytest>=8.0"]
+license-files = ["LICENSE"]
+authors = [{ name = "Jorge Cardona", email = "jorgeecardona@gmail.com" }]
+keywords = [
+    "pytest",
+    "parallel",
+    "fork",
+    "xdist",
+    "testing",
+    "concurrency",
+    "session-fixtures",
+    "test-speed",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+# >=8.1, not >=8.0: FixtureManager.getfixturedefs took a nodeid string until 8.1 and a
+# Node from 8.1 on. session_scope.py passes a Node, so on 8.0 the fork runner dies with
+# "AttributeError: 'Function' object has no attribute 'find'" before running a test.
+dependencies = ["pytest>=8.1"]
 
 [project.entry-points.pytest11]
 parallex = "pytest_parallex.plugin"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.urls]
+Homepage = "https://gitlab.com/jorgeecardona/pytest-parallex"
+Repository = "https://gitlab.com/jorgeecardona/pytest-parallex"
+Changelog = "https://gitlab.com/jorgeecardona/pytest-parallex/-/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytest_parallex"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "testing", "docs", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[dependency-groups]
+# pytest-xdist is a *test* dependency, not a competitor we forgot to remove: the suite
+# asserts that our fixtures still resolve to ours when xdist is installed alongside,
+# which is the configuration that broke `worker_id` silently.
+dev = ["ruff>=0.6", "pyright>=1.1.390", "pytest>=8", "pytest-xdist>=3"]
 
 [tool.pytest.ini_options]
 testpaths = ["testing"]
 
 [tool.ruff]
-src = ["src"]
+line-length = 100
 target-version = "py310"
+src = ["src", "testing"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pytest_parallex"]
+
+[tool.pyright]
+include = ["src", "testing"]
+extraPaths = ["src"]
+pythonVersion = "3.10"
+# `basic`, not musil's `strict`: this plugin reaches into pytest's private internals by
+# necessity (TestReport._to_json, FixtureDef.cached_result, Session._setupstate), and
+# stashes its own attributes on Config. Those are untyped or unknown to pyright by
+# construction, so strict mode reports the design rather than any defect.
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
