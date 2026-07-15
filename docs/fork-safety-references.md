@@ -397,7 +397,24 @@ suite's plugins spawn threads at import time — check with `threading.active_co
 
 ---
 
-## Known fuse: `getfixturevalue` during "teardown" breaks on pytest 10.1
+## FIXED 2026-07-16: `getfixturevalue` during "teardown"
+
+**Fixed by `_borrowed_item_active`** — the borrowed item is pushed onto the setup stack
+for the duration of the hoist, so `is_node_active(request.node)` is true and the
+deprecation path is never taken. It comes straight back off, because `SetupState`
+asserts every stack entry is in the next item's parent chain.
+
+**It was worse than "a future deadline", which is how this was first written up.** Under
+`filterwarnings = error` the warning *is* an exception, so it hit
+`setup_session_fixtures`' except branch: every hoist recorded as failed, every fixture
+left to the workers, container booted once per worker exactly like xdist — on a green
+run. Anyone with that setting had the feature silently inert. Measured before the fix:
+4 boots with `filterwarnings=error`, 1 without. Now 1 in both, on pytest 8.1/8.4/9.0/9.1.
+
+Regression test: `TestHoistingUnderStrictWarnings`. It asserts the boot count, not the
+warning, so it stays honest whatever pytest renames things to.
+
+### The original analysis
 
 `session_scope.setup_session_fixtures` hoists fixtures by borrowing a real item's request
 and calling `request.getfixturevalue(name)` from `pytest_runtestloop` — before any test has

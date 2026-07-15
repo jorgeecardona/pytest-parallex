@@ -26,6 +26,8 @@ controller owns the *server* and each worker opens its own *connection* to it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pytest
@@ -141,15 +143,54 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
     done: list[str] = []
     failures: list[tuple[str, str]] = []
 
-    for name in names:
-        try:
-            request.getfixturevalue(name)
-        except Exception as exc:  # deliberately broad — re-raised in the worker, see docstring
-            failures.append((name, repr(exc)))
-        else:
-            done.append(name)
+    with _borrowed_item_active(session, item):
+        for name in names:
+            try:
+                request.getfixturevalue(name)
+            except Exception as exc:  # deliberately broad — re-raised in the worker, see docstring
+                failures.append((name, repr(exc)))
+            else:
+                done.append(name)
 
     return EagerSetupResult(names=tuple(done), failures=tuple(failures), request=request)
+
+
+@contextmanager
+def _borrowed_item_active(session: pytest.Session, item: pytest.Item) -> Iterator[None]:
+    """Make the borrowed item look set-up for the duration of the hoist.
+
+    ``getfixturevalue`` decides it is being called "during teardown" by asking
+    ``is_node_active(request.node)``, which is just ``node in setupstate.stack``. We borrow
+    ``session.items[0]``'s request and never run that item, so it is not on the stack, and
+    pytest concluded we were tearing down::
+
+        PytestRemovedIn10Warning: Calling request.getfixturevalue("postgres") during
+        teardown is deprecated.
+
+    That is not cosmetic. The warning goes to ``setup_session_fixtures``' own except
+    branch under ``filterwarnings = error`` — a common setting — so every hoist "failed",
+    every fixture was left to the workers, and the whole feature silently degraded to
+    xdist's once-per-worker with a green run and nothing in the summary. pytest's own TODO
+    says 10.1 raises unconditionally, which would do the same for everyone.
+
+    Pushing the item makes the check true. It has to come back off again: ``SetupState``
+    asserts every stack entry is in the *next* item's parent chain, so an item left behind
+    makes the first worker to run a different one die with "previous item was not torn down
+    properly".
+
+    Empty finalizer list, because this item is a stand-in and never really ran — there is
+    nothing of its own to tear down. A session fixture's own finalizers do not land here
+    anyway: they attach to ``subrequest.node``, which for session scope is the Session.
+    """
+    stack = session._setupstate.stack  # type: ignore[attr-defined]
+    borrowed = item not in stack
+    if borrowed:
+        stack[item] = ([], None)
+    try:
+        yield
+    finally:
+        if borrowed:
+            stack.pop(item, None)
 
 
 def _activate_session_on_setup_stack(session: pytest.Session) -> None:

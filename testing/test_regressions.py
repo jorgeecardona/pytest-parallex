@@ -317,6 +317,61 @@ class TestWorkerScopedFixtures:
         assert all(w.startswith("f") for w in used), used
 
 
+class TestHoistingUnderStrictWarnings:
+    def test_hoisting_survives_filterwarnings_error(self, pytester):
+        """Hoisting must still work for a suite that turns warnings into errors.
+
+        The controller hoists by borrowing ``session.items[0]``'s request and calling
+        ``getfixturevalue`` from ``pytest_runtestloop``. pytest decides whether that counts
+        as "during teardown" by checking ``request.node in setupstate.stack`` — and the
+        borrowed item never ran, so it wasn't there. pytest 9 warns
+        (``PytestRemovedIn10Warning``) and carries on.
+
+        Under ``filterwarnings = error`` that warning *is* an exception. It landed in
+        ``setup_session_fixtures``' except branch, so every hoist was recorded as failed and
+        left to the workers: the container booted once per worker, exactly like xdist, on a
+        green run with nothing in the summary. Anyone with that setting had installed this
+        plugin and got nothing from it.
+
+        pytest's own TODO says 10.1 drops the condition and raises unconditionally, which
+        makes that everyone's behaviour. Asserting on the boot count rather than on the
+        warning keeps this honest either way: the test fails if the feature stops working,
+        whatever pytest decides to call it.
+        """
+        pytester.makeini(
+            """
+            [pytest]
+            filterwarnings =
+                error
+            """
+        )
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture(scope="session")
+            def container():
+                with open("boots", "a") as fh:
+                    fh.write("1")
+                return "postgres://x"
+            """
+        )
+        pytester.makepyfile(
+            **{
+                f"test_{n}": f"def test_{n}(container): assert container"
+                for n in ("alpha", "beta", "gamma", "delta")
+            }
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=4")
+        result.assert_outcomes(passed=4)
+
+        boots = (pytester.path / "boots").read_text()
+        assert len(boots) == 1, (
+            f"container booted {len(boots)}x under filterwarnings=error — "
+            f"hoisting silently degraded to once-per-worker"
+        )
+
+
 class TestForkOutput:
     def test_controller_output_is_not_duplicated_into_children(self, pytester):
         """Output written before the fork must appear once, not once per child.
