@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class TestOptions:
     def test_parallel_option_recognized(self, pytester):
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=thread", "--parallel-workers=1")
         assert result.ret == 0
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-1", "2.5"])
+    def test_bad_worker_count_is_a_usage_error(self, pytester, bad):
+        """A typo in a flag must produce a usage error, not a traceback.
+
+        Anything other than a UsageError raised from pytest_configure surfaces as an
+        INTERNALERROR with a dump through pytest's internals: `--parallel-workers=abc`
+        used to end in `ValueError: invalid literal for int()`.
+        """
+        pytester.makepyfile("def test_a(): pass")
+        result = pytester.runpytest("--parallel=thread", f"--parallel-workers={bad}")
+        assert result.ret != 0
+        result.stderr.fnmatch_lines(["*--parallel-workers must be*"])
+        assert "INTERNALERROR" not in result.stdout.str()
 
     def test_parallel_process_option(self, pytester):
         pytester.makepyfile("def test_a(): pass")

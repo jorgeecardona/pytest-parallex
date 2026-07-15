@@ -8,6 +8,7 @@ import logging.handlers
 import os
 import sys
 import threading
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -206,22 +207,30 @@ def uninstall_fixture_execute_lock() -> None:
 
 
 class ThreadSafeReporter:
-    """Serializes terminal output from concurrent test reporters."""
+    """Serializes terminal output from concurrent test reporters.
+
+    Annotated ``Generator[None, Any, Any]``, not with the hook's own return type: a
+    pluggy ``wrapper=True`` hookimpl *is* a generator, and ``return (yield)`` returns
+    whatever the inner implementations produced. The previous annotations described the
+    hook rather than the function, so pyright rejected all three — and the
+    ``# type: ignore[return]`` meant to paper over it sat on the ``def`` line while the
+    error is reported on the ``yield``.
+    """
 
     _lock = threading.Lock()
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> pytest.TestReport:  # type: ignore[return]
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> Generator[None, Any, Any]:
         with self._lock:
             return (yield)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_runtest_logstart(self) -> None:
+    def pytest_runtest_logstart(self) -> Generator[None, Any, Any]:
         with self._lock:
             return (yield)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_runtest_logfinish(self) -> None:
+    def pytest_runtest_logfinish(self) -> Generator[None, Any, Any]:
         with self._lock:
             return (yield)
 
