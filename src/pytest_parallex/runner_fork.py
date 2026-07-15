@@ -6,13 +6,13 @@ dominant fixed cost, and it is paid ``num_workers`` times before a single test r
 
 This runner pays it once. Collection happens normally in the parent, then we ``fork()``:
 each child inherits the parent's already-imported modules, the collected ``session.items``,
-and anything a ``pytest_parallex_warmup`` hook chose to build — all via copy-on-write, at
+and anything a ``pytest_parallex_setup`` hook chose to build — all via copy-on-write, at
 a cost of roughly a millisecond per child.
 
 The trade is that ``fork()`` is only safe on a process that has no threads, no running
 event loop, and no open sockets or database connections (see ``_safety.assert_forkable``).
 We fork at the top of ``pytest_runtestloop``, before any fixture has run, which is the last
-moment the process is still guaranteed quiet. The warmup hook runs pre-fork and is therefore
+moment the process is still guaranteed quiet. The setup hook runs pre-fork and is therefore
 held to the same contract: pure imports and CPU work, no I/O handles.
 """
 
@@ -21,15 +21,21 @@ from __future__ import annotations
 import ctypes
 import multiprocessing
 import os
-import pickle
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import pytest
 
+from pytest_parallex._loop import raise_if_collection_failed
+from pytest_parallex._reports import (
+    ReportCollector,
+    read_reports,
+    replay,
+    unlink_quietly,
+    write_reports,
+)
 from pytest_parallex._safety import (
     ForkUnsafe,
     assert_forkable,
@@ -43,9 +49,6 @@ from pytest_parallex.session_scope import (
     setup_session_fixtures,
     teardown_session_fixtures,
 )
-
-if TYPE_CHECKING:
-    from _pytest.reports import TestReport
 
 
 @dataclass(frozen=True)
@@ -69,11 +72,7 @@ class ForkRunner:
     # as a suspiciously low core count.
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
-        if session.testsfailed and not session.config.option.continue_on_collection_errors:
-            raise session.Interrupted(
-                "%d error%s during collection"
-                % (session.testsfailed, "s" if session.testsfailed != 1 else "")
-            )
+        raise_if_collection_failed(session)
         if session.config.option.collectonly or not session.items:
             return True
 
@@ -165,6 +164,20 @@ class ForkRunner:
             fd, path = tempfile.mkstemp(prefix=f"pytest-parallex-{worker_id}-", suffix=".reports")
             os.close(fd)
 
+            # fork() copies the process, and a copy of a buffer is a copy of its
+            # *contents*. Anything the controller has written but not yet flushed —
+            # the header, warnings, whatever a pre-fork session fixture printed — is
+            # duplicated into every child, and gets written out for real the moment the
+            # child's own output flushes it. os._exit below prevents the child flushing at
+            # exit, but not while it runs.
+            #
+            # Invisible on a terminal, because a tty is line-buffered and so the buffer is
+            # already empty here. A pipe is block-buffered: redirect to a file, tee, or run
+            # in CI and the duplicates appear. Flushing empties the buffer, so there is
+            # nothing left to copy.
+            sys.stdout.flush()
+            sys.stderr.flush()
+
             pid = os.fork()
             if pid == 0:
                 # --- child ---
@@ -190,15 +203,20 @@ class ForkRunner:
         """Claim groups until the queue drains, then pickle this worker's reports."""
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
 
-        # The child must not re-enter this runner's runtestloop, and must not emit the
-        # parent's terminal output — it reports only through the pickle file.
+        # The child must not re-enter this runner's runtestloop.
         self.config.pluginmanager.unregister(name="parallel-runner")
-        collected: list[tuple[str, object]] = []
 
-        def _record(report: TestReport) -> None:
-            collected.append((report.when or "call", report._to_json()))
+        # Nor may it print. The child inherited the controller's terminal reporter, still
+        # wired to the same stdout, so it wrote its own progress there *and* the controller
+        # wrote the same reports again when it replayed them: three failures printed
+        # 'FFFFFF'. Unregistering leaves exactly one writer for the terminal — the
+        # controller, replaying — and the child reporting solely through its report file.
+        terminal = self.config.pluginmanager.getplugin("terminalreporter")
+        if terminal is not None:
+            self.config.pluginmanager.unregister(terminal)
 
-        self.config.pluginmanager.register(_ReportCollector(_record), "parallel-report-collector")
+        collector = ReportCollector()
+        self.config.pluginmanager.register(collector, "parallex-report-collector")
 
         # The controller owns the session fixtures it set up pre-fork; this child must not
         # finalize its inherited copies. See session_scope.detach_in_child.
@@ -227,30 +245,25 @@ class ForkRunner:
             if trace:
                 _trace(f"{worker_id} finished group {index} t={time.monotonic():.2f}")
 
-        with open(path, "wb") as fh:
-            pickle.dump(collected, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        write_reports(path, collector.collected)
         return 0
 
     def _collect_reports(self, session: pytest.Session, children: list[_Child]) -> int:
-        """Wait for every child, then replay its reports on the parent's hooks."""
-        from _pytest.reports import TestReport
+        """Wait for every child, replay its reports, and count only what replay cannot.
 
+        The returned count covers *dead workers*, not failed tests. Replaying a report
+        already increments ``session.testsfailed`` — ``Session`` implements
+        ``pytest_runtest_logreport`` itself — so the old ``if report.failed: failed += 1``
+        here counted every failure a second time and the caller then added it on top:
+        three failing tests ended the run with ``testsfailed == 6``, and ``--maxfail=2``
+        announced "stopping after 3 failures". See ``_reports.replay``.
+        """
         failed = 0
         for child in children:
             _, status = os.waitpid(child.pid, 0)
-            try:
-                with open(child.report_path, "rb") as fh:
-                    payload = pickle.load(fh)
-            except (OSError, EOFError, pickle.UnpicklingError):
-                payload = []
-            finally:
-                _unlink_quietly(child.report_path)
-
-            for _when, raw in payload:
-                report = TestReport._from_json(raw)
-                session.config.hook.pytest_runtest_logreport(report=report)
-                if report.failed:
-                    failed += 1
+            payload = read_reports(child.report_path)
+            unlink_quietly(child.report_path)
+            replay(session.config, payload)
 
             if status != 0:
                 # A worker killed mid-group (OOM, segfault, a test calling os._exit)
@@ -266,24 +279,6 @@ class ForkRunner:
         return failed
 
 
-class _ReportCollector:
-    """Captures reports inside a child instead of printing them."""
-
-    def __init__(self, record) -> None:
-        self._record = record
-
-    @pytest.hookimpl(tryfirst=True)
-    def pytest_runtest_logreport(self, report: TestReport) -> None:
-        self._record(report)
-
-
 def _trace(msg: str) -> None:
     """Write straight to fd 2, bypassing pytest's capture (which the child inherits)."""
     os.write(2, f"[parallex] {msg}\n".encode())
-
-
-def _unlink_quietly(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass

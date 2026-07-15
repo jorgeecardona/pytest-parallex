@@ -7,6 +7,9 @@ from typing import Any
 
 import pytest
 
+from pytest_parallex import get_worker_id
+from pytest_parallex._reports import ENV_REPORT_PATH, ReportWriter
+
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
     from pytest_parallex import hooks
@@ -49,6 +52,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     if config.option.collectonly:
         return
+
+    # A spawned worker (--parallel=process) is an ordinary pytest run that happens to have
+    # been handed a report path. It captures its reports for the controller to replay
+    # instead of printing them, and it never fans out itself — the controller does not
+    # forward --parallel, so `mode` is None here and we return below.
+    report_path = os.environ.get(ENV_REPORT_PATH)
+    if report_path:
+        config.pluginmanager.register(ReportWriter(report_path), "parallex-report-writer")
+        config._parallel_worker_id = os.environ.get(  # type: ignore[attr-defined]
+            "PYTEST_PARALLEL_WORKER", "main"
+        )
 
     mode = config.getoption("parallel_mode", default=None)
     if mode is None:
@@ -99,19 +113,44 @@ def _resolve_worker_count(config: pytest.Config) -> int:
 # --- Fixtures ---
 
 
-@pytest.fixture(scope="session")
-def worker_id(request: pytest.FixtureRequest) -> str:
-    """Return 'w0', 'w1', ... or 'main' if not in parallel mode."""
+@pytest.fixture
+def parallex_worker_id(request: pytest.FixtureRequest) -> str:
+    """The worker running this test: 'f0'/'w0'/'a0'…, or 'main' if not parallel.
+
+    Named ``parallex_``-something because pytest-xdist already ships a fixture called
+    ``worker_id``, and a suite that parallelises is exactly the suite likely to have xdist
+    installed alongside this. Two plugins claiming one fixture name resolve by
+    registration order, and xdist won: ours silently returned xdist's ``'master'`` — the
+    right shape, the wrong answer, no error anywhere. A distinct name cannot lose that
+    race.
+
+    Deliberately *not* session-scoped, in every mode:
+
+    * thread/async share one session across workers, so a session-scoped value would be
+      computed once by whichever worker asked first and then handed to all the others.
+    * under fork, ``--parallex-session-scope`` sets session fixtures up in the controller
+      *before* the fork — so a session-scoped ``worker_id`` would resolve to 'main' there
+      and every child would inherit that answer.
+
+    The two runner families report their identity differently — fork sets a config
+    attribute in the child (its own process, so there is nothing to isolate it from),
+    thread/async set a thread-local (one process, so there is). Ask the thread-local
+    first: in fork children it is unset and falls through, and in thread/async the config
+    attribute is unset, so exactly one of them ever answers.
+    """
+    worker = get_worker_id()
+    if worker != "main":
+        return worker
     return getattr(request.config, "_parallel_worker_id", "main")
 
 
 @pytest.fixture(scope="session")
-def parallel_setup_data(request: pytest.FixtureRequest) -> dict[str, Any]:
+def parallex_setup_data(request: pytest.FixtureRequest) -> dict[str, Any]:
     """Data returned by the ``pytest_parallex_setup`` hook."""
     return getattr(request.config, "_parallel_setup_data", {})
 
 
 @pytest.fixture(scope="session")
-def parallel_mode(request: pytest.FixtureRequest) -> str | None:
+def parallex_mode(request: pytest.FixtureRequest) -> str | None:
     """The active parallel mode, or None."""
     return request.config.getoption("parallel_mode", default=None)

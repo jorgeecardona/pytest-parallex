@@ -139,7 +139,7 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
     for name in names:
         try:
             request.getfixturevalue(name)
-        except Exception as exc:  # noqa: BLE001 — re-raised in the worker, see docstring
+        except Exception as exc:  # deliberately broad — re-raised in the worker, see docstring
             failures.append((name, repr(exc)))
         else:
             done.append(name)
@@ -196,6 +196,6 @@ def teardown_session_fixtures(session: pytest.Session) -> list[tuple[str, str]]:
     """
     try:
         session._setupstate.teardown_exact(None)  # type: ignore[attr-defined]
-    except Exception as exc:  # noqa: BLE001 — a leaked resource must be reported, not raised
+    except Exception as exc:  # deliberately broad — a leaked resource must be reported, not raised
         return [("session", repr(exc))]
     return []

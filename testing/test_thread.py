@@ -34,7 +34,10 @@ class TestThreadBasic:
                 assert False
         """)
         result = pytester.runpytest("--parallel=thread", "--parallel-workers=2")
-        result.stdout.fnmatch_lines(["*1 passed*1 failed*"])
+        # pytest's summary line always orders failed before passed, whatever order the
+        # tests ran in — matching "*1 passed*1 failed*" could never succeed.
+        result.stdout.fnmatch_lines(["*1 failed*1 passed*"])
+        assert result.ret == 1
 
     def test_empty_suite(self, pytester):
         pytester.makepyfile("")

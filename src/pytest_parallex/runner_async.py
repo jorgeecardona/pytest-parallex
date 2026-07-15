@@ -1,23 +1,27 @@
-"""Async I/O based parallel test runner.
+"""Async parallel test runner — the thread runner, driven from an event loop.
 
-Uses asyncio to run tests concurrently via asyncio.to_thread.
-Shares thread safety utilities with the thread runner since
-to_thread dispatches to a real thread pool.
+``asyncio.to_thread`` dispatches to a real thread pool, so this is ``--parallel=thread``
+with an asyncio front end: same shared session, same fixture caching, same GIL, same
+requirement that tests tolerate sharing an address space. Everything of substance lives in
+``_safety`` and ``_loop.run_chunk``, shared with the thread runner.
+
+Reach for it when the surrounding code is already async and driving the run from a loop is
+convenient. If you just want tests to run in parallel, ``--parallel=thread`` is the same
+thing with one less moving part.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 
-from pytest_parallex import _worker_id_local
+from pytest_parallex._loop import raise_if_collection_failed, run_chunk
 from pytest_parallex._safety import (
-    ThreadFixtureLocking,
     ThreadLocalSetupStateProxy,
     ThreadSafeReporter,
     clear_fixture_locks,
+    install_fixture_execute_lock,
 )
 from pytest_parallex.scheduler import schedule_round_robin
 
@@ -32,15 +36,11 @@ class AsyncRunner:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
         self.config.pluginmanager.register(ThreadSafeReporter(), "thread-safe-reporter")
-        self.config.pluginmanager.register(ThreadFixtureLocking(), "thread-fixture-locking")
+        install_fixture_execute_lock()
 
     @pytest.hookimpl
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
-        if session.testsfailed and not session.config.option.continue_on_collection_errors:
-            raise session.Interrupted(
-                "%d error%s during collection"
-                % (session.testsfailed, "s" if session.testsfailed != 1 else "")
-            )
+        raise_if_collection_failed(session)
 
         if not session.items:
             return True
@@ -55,41 +55,31 @@ class AsyncRunner:
         return True
 
     async def _run_all(self, session: pytest.Session) -> None:
-        semaphore = asyncio.Semaphore(self.num_workers)
+        """One task per *worker*, each owning a chunk — not one task per test.
+
+        Per-test tasks were the original design and they were unsound. ``to_thread``
+        hands work to a shared pool, so any thread could run any item, and each item's
+        ``nextitem`` pointed at the globally-next item rather than the next one on its own
+        worker. Two threads then interleaved teardown of scopes the other was still
+        inside, and pytest threw ``AssertionError: previous item was not torn down
+        properly`` from a thread that had done nothing wrong. Chunking is what makes
+        ``nextitem`` meaningful — see ``_loop.run_chunk``.
+
+        No semaphore either: the chunk count *is* the worker count, so concurrency is
+        bounded by construction.
+        """
+        chunks = schedule_round_robin(session.items, self.num_workers)
         errors: list[BaseException] = []
 
-        async def run_one(
-            item: pytest.Item, nextitem: pytest.Item | pytest.Session
-        ) -> None:
-            async with semaphore:
-                if session.shouldfail or session.shouldstop:
-                    return
-                try:
-                    await asyncio.to_thread(
-                        self._run_item, item, nextitem, session
-                    )
-                except BaseException as exc:
-                    errors.append(exc)
-
-        tasks = []
-        items = session.items
-        for i, item in enumerate(items):
-            nextitem = items[i + 1] if i + 1 < len(items) else session
-            tasks.append(asyncio.create_task(run_one(item, nextitem)))
-
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(run_chunk, chunk, session, errors, f"a{i}")
+                for i, chunk in enumerate(chunks)
+            )
+        )
 
         if errors:
             raise errors[0]
-
-    @staticmethod
-    def _run_item(
-        item: pytest.Item,
-        nextitem: Any,
-        session: pytest.Session,
-    ) -> None:
-        _worker_id_local.id = f"async-{id(asyncio.current_task())}"
-        item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
     @pytest.hookimpl
     def pytest_sessionfinish(self) -> None:

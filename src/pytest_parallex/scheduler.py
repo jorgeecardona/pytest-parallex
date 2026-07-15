@@ -54,6 +54,14 @@ def schedule_by_scope(
     a poor proxy for time. Measured on a real 1490-test suite whose per-module cost
     spanned 0.1s to 167s, this deal left the slowest worker holding 239s against a
     greedy queue's 167s — a 1.43x penalty, with 1832 core-seconds of workers idle.
+
+    Groups are dealt to the worker holding the least so far (longest-processing-time-first,
+    the standard greedy approximation). Note that "least" is still measured in tests, so
+    the guess above is what's being optimised — LPT bounds the damage at 4/3 of optimal
+    *for the counts it was given*, which is only as good as count-as-proxy-for-time. Plain
+    round-robin over the sorted groups, which this used to do, has no such bound at all:
+    with 4 workers it hands groups 0 and 4 to the same worker regardless of what the
+    groups in between cost.
     """
     if not items or num_workers < 1:
         return []
@@ -61,7 +69,9 @@ def schedule_by_scope(
     sorted_groups = group_by_scope(items)
     actual_workers = min(num_workers, len(sorted_groups))
     chunks: list[list] = [[] for _ in range(actual_workers)]
-    for i, group in enumerate(sorted_groups):
-        chunks[i % actual_workers].extend(group)
+
+    for group in sorted_groups:
+        lightest = min(range(actual_workers), key=lambda i: len(chunks[i]))
+        chunks[lightest].extend(group)
 
     return chunks

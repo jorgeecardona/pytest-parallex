@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-
 # --- Fork Safety ---
 
 
@@ -119,37 +118,88 @@ class ThreadLocalSetupStateProxy:
 
 
 # --- Fixture Locking ---
+#
+# Making a shared, non-function-scoped fixture safe under threads means serializing
+# ``FixtureDef.execute``, and nothing shallower will do. The sequence execute() runs is:
+#
+#     1. resolve the fixture's own dependencies
+#     2. check cached_result -> return early on a hit
+#     3. assert not self._finalizers, register finalizers      (pytest >= 9.1)
+#     4. call the pytest_fixture_setup hook -> run the body, populate the cache
+#
+# Every plugin hook available to us fires at step 4. The race is between 2 and 3: two
+# threads both miss the cache, the first reaches 4 and registers its finalizers, and the
+# second — already past its own step 2 — hits the assertion at 3 and dies with a bare
+# ``AssertionError`` from deep inside pytest. Locking at step 4 is locking after the
+# accident.
+#
+# pytest 9.0 had no such assertion, so the same race merely ran the fixture body twice and
+# said nothing: one container booted per thread, silently, which is the exact behaviour
+# this plugin exists to prevent. 9.1 turned it into a crash. Both are the same bug.
+#
+# So we wrap execute() itself, which puts steps 1-4 in one critical section. The waiter
+# then finds the cache at its *own* step 2 and returns early through pytest's own code
+# path — no short-circuit of ours, no second body, no assertion.
 
-_fixture_locks: dict[int, threading.Lock] = {}
+_fixture_locks: dict[int, threading.RLock] = {}
 _fixture_locks_lock = threading.Lock()
+_original_execute: Any = None
 
 
-def _get_fixture_lock(fixturedef_id: int) -> threading.Lock:
+def _get_fixture_lock(fixturedef_id: int) -> threading.RLock:
     with _fixture_locks_lock:
         if fixturedef_id not in _fixture_locks:
-            _fixture_locks[fixturedef_id] = threading.Lock()
+            # Reentrant: execute() resolves dependencies inside the lock, and a diamond
+            # (X needs Y, Z needs Y) can re-enter the same fixturedef on one thread.
+            _fixture_locks[fixturedef_id] = threading.RLock()
         return _fixture_locks[fixturedef_id]
 
 
-class ThreadFixtureLocking:
-    """Prevents concurrent setup of non-function-scoped fixtures.
+def install_fixture_execute_lock() -> None:
+    """Serialize ``FixtureDef.execute`` per fixturedef, for the threaded runners.
 
-    When multiple threads need the same module/session-scoped fixture,
-    only the first thread runs setup. Others wait and get the cached result.
+    Patching a pytest internal is a real cost, taken because the alternative doesn't
+    exist: the critical section starts before any hook we can register runs.
+
+    Function-scoped fixtures are left alone. They are per-test by definition, so there is
+    nothing to share and no reason to make every test queue behind one lock.
+
+    Deadlock: a fixture resolves its dependencies while holding its own lock, so thread A
+    can hold X and want Y while B holds Y and wants X only if X and Y depend on each
+    other — a cycle, which pytest rejects at collection.
     """
+    global _original_execute
+    if _original_execute is not None:
+        return  # already installed
 
-    @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_fixture_setup(
-        self, fixturedef: pytest.FixtureDef, request: pytest.FixtureRequest  # type: ignore[type-arg]
-    ) -> Any:
-        if fixturedef.scope == "function":
-            return (yield)
+    from _pytest.fixtures import FixtureDef
 
-        lock = _get_fixture_lock(id(fixturedef))
-        with lock:
-            if fixturedef.cached_result is not None:
-                return fixturedef.cached_result[0]
-            return (yield)
+    _original_execute = FixtureDef.execute
+
+    def locked_execute(self, request):  # type: ignore[no-untyped-def]
+        if self.scope == "function":
+            return _original_execute(self, request)
+        with _get_fixture_lock(id(self)):
+            return _original_execute(self, request)
+
+    FixtureDef.execute = locked_execute  # type: ignore[method-assign]
+
+
+def uninstall_fixture_execute_lock() -> None:
+    """Put ``FixtureDef.execute`` back.
+
+    Not hygiene for its own sake: pytest's own ``pytester`` runs test sessions in *this*
+    interpreter, so a patch left installed leaks out of the session that made it and into
+    every later one — including the suite that is testing this plugin.
+    """
+    global _original_execute
+    if _original_execute is None:
+        return
+
+    from _pytest.fixtures import FixtureDef
+
+    FixtureDef.execute = _original_execute  # type: ignore[method-assign]
+    _original_execute = None
 
 
 # --- Thread-Safe Reporter ---
@@ -177,6 +227,12 @@ class ThreadSafeReporter:
 
 
 def clear_fixture_locks() -> None:
-    """Clear all fixture locks. Call at session end."""
+    """Drop the per-fixturedef locks and restore ``execute``. Call at session end.
+
+    The locks are keyed by ``id(fixturedef)``, which CPython reuses once the object is
+    collected — so a lock kept past the session it belongs to could later be handed out
+    for an unrelated fixture that happens to land on the same address.
+    """
+    uninstall_fixture_execute_lock()
     with _fixture_locks_lock:
         _fixture_locks.clear()
