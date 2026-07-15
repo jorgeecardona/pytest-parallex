@@ -1,48 +1,42 @@
 # pytest-parallex
 
-Parallel test execution for pytest, with one idea the other plugins can't offer:
-**`scope="session"` means session — once, not once per worker.**
+Run pytest in parallel. The difference from pytest-xdist: `scope="session"` fixtures run
+once for the whole run, not once per worker.
 
 ```bash
 pip install pytest-parallex
 pytest --parallel=fork
 ```
 
-## The problem it solves
+## Why
 
-Under pytest-xdist, every worker is a fresh interpreter that runs its own full session, so
-a `scope="session"` fixture executes **once per worker**. Their docs say so plainly, and
-ship a `FileLock`-and-shared-tmpdir recipe as the workaround. It isn't a bug in your test
-suite — their architecture has no moment at which a controller could build something once
-and hand it to everybody.
+xdist starts each worker as a separate interpreter, and each one runs its own session. So a
+`scope="session"` fixture runs once per worker. The xdist docs say this and suggest a
+`FileLock` workaround. You can't fix it in your conftest — there's no point in xdist's
+design where one process could build something and hand it to the others.
 
-Forking has that moment.
+Forking gives you that point. `--parallel=fork` collects the tests, runs your session
+fixtures, and then forks. Each child inherits the already-built fixtures through
+copy-on-write and uses them without re-running anything.
+
+Counting how many times the fixture body actually runs:
+
+```console
+$ pytest -n 4                                  # pytest-xdist
+8 passed        session fixture ran 4 times
+
+$ pytest --parallel=fork --parallel-workers=4  # pytest-parallex
+8 passed        session fixture ran 1 time
+```
 
 ```python
 @pytest.fixture(scope="session")
 def postgres():
-    with PostgresContainer("postgres:16") as pg:   # boots ONCE
+    with PostgresContainer("postgres:16") as pg:   # runs once
         yield pg.get_connection_url()              # every worker gets this URL
 ```
 
-`--parallel=fork` sets session fixtures up in the controller *before* forking. Children
-inherit the `FixtureDef` — cached result and all — through copy-on-write, so they use it
-and never re-run setup. One container, one compiled asset, one login, shared by every
-worker, with no lockfile.
-
-Same suite, same four workers, counting how many times the fixture body actually ran:
-
-```console
-$ pytest -n 4                                  # pytest-xdist
-8 passed        session fixture booted 4 times
-
-$ pytest --parallel=fork --parallel-workers=4  # pytest-parallex
-8 passed        session fixture booted 1 time
-```
-
-That leaves the scope pytest never had a name for: **the worker**. What xdist calls
-"session" is really per-worker, and conflating the two is what forces the recipe. Here
-they're separate — `session` runs in the controller, and each forked child is a worker.
+One container, one login, one compiled asset per run, and no lockfile.
 
 ## Modes
 
@@ -52,36 +46,38 @@ pytest --parallel=fork --parallel-workers=8
 
 | mode | isolation | `scope="session"` runs | use when |
 |---|---|---|---|
-| `fork` | process per worker, warm | **once, in the controller** | Linux/macOS, and the process is quiet at fork time |
-| `thread` | shared address space | once | tests are I/O-bound and tolerate sharing globals |
-| `async` | shared address space | once | same as `thread`, dispatched via asyncio |
-| `process` | fresh interpreter per worker | once **per worker** | tests mutate process-global state, or you're on Windows |
+| `fork` | process per worker, warm | once, in the controller | Linux/macOS, and the process is quiet at fork time |
+| `thread` | shared address space | once | tests are I/O-bound and don't mind sharing globals |
+| `async` | shared address space | once | same as `thread`, driven from an event loop |
+| `process` | fresh interpreter per worker | once per worker | tests mutate process-global state, or you're on Windows |
 
 `--parallel-workers` defaults to `auto` (CPU count).
 
-## What fork actually costs and buys
+## What fork is and isn't good for
 
-Measured, and worth being precise about, because the intuitive pitch is wrong:
+Two separate things, and only one of them scales:
 
-- **Removing xdist's worker boot is a flat ~1.5–2.3s.** It does *not* grow with suite size,
-  import weight, or worker count. On a 3s local run that's 1.84x and you feel it; on a 292s
-  CI suite it's under 1% and it's noise. Redundant imports parallelize across idle cores —
-  xdist's N-way collection is wasted *CPU*, not wasted *time*, and you only get paid for
-  removing it if the cores were already busy.
-- **Session-fixture reuse is the part that scales.** A 10s container boot across 8 workers
-  is 80s under xdist and 10s here. That's the reason to reach for this.
+Skipping xdist's worker startup saves about 1.5–2.3 seconds. That's a fixed cost, so it
+doesn't grow with your suite, your imports, or your worker count. On a 3-second local run
+it's a 1.8x speedup and you notice it. On a 292-second CI suite it's under 1% and it's
+noise. The reason is that redundant imports run on cores that were idle anyway — xdist's
+N-way collection wastes CPU, not wall time, and you only get paid for removing it if those
+cores had something better to do.
 
-Full method, numbers, and three traps that produced convincing wrong answers:
-[docs/benchmarks.md](docs/benchmarks.md).
+Reusing session fixtures is the part that scales. A 10-second container boot costs 80
+seconds across 8 xdist workers and 10 seconds here. That's the reason to use this.
+
+[docs/benchmarks.md](docs/benchmarks.md) has the numbers, the method, and three
+measurements that looked convincing and were wrong.
 
 ## Fork safety
 
-`fork()` duplicates only the calling thread. Anything another thread held — a lock, a
-half-written buffer, a connection's state machine — is duplicated mid-flight and belongs
-to nobody in the child. That's how forked children deadlock, and CPython 3.12 warns about
-exactly it.
+`fork()` only copies the calling thread. Whatever the other threads were holding — a lock,
+a half-written buffer, a connection mid-handshake — gets copied in that state and belongs
+to nobody in the child. This is the usual way forked children deadlock, and CPython 3.12
+warns about it.
 
-So parallex refuses rather than warns, and names the offender:
+parallex checks first and refuses, naming what's in the way:
 
 ```
 --parallel=fork requires a quiet process at fork time, but 1 non-main thread(s)
@@ -89,69 +85,67 @@ are running (Thread-1 (_monitor)). Move the offending setup into a fixture so it
 runs after the fork, or use --parallel=process.
 ```
 
-Logging `QueueListener` threads (which litestar, and anything using `QueueHandler`, starts
-at import) are stopped and restarted around the fork automatically.
+Logging `QueueListener` threads are the common case (litestar starts one at import, as does
+anything using `QueueHandler`), so those get stopped and restarted around the fork for you.
 
-The constraint this imposes on a pre-fork session fixture: whatever it builds must survive
-a fork. **An address survives — a URL, a path, a port. A live connection, a thread, or an
-event loop does not.** The natural split is that the controller owns the *server* and each
-worker opens its own *connection* to it:
+This puts one constraint on a session fixture: what it builds has to survive a fork. An
+address survives — a URL, a path, a port. A live connection, a thread, or an event loop
+doesn't. So keep the server in the controller and open connections per worker:
 
 ```python
 @pytest.fixture(scope="session")
-def db_url():                     # controller: owns the server. Forkable.
+def db_url():                     # controller: owns the server, survives the fork
     with PostgresContainer("postgres:16") as pg:
         yield pg.get_connection_url()
 
-@pytest.fixture                   # worker: owns the connection. Not forkable, so per-test.
+@pytest.fixture                   # per test: owns the connection, can't survive a fork
 def db(db_url):
     conn = psycopg.connect(db_url)
     yield conn
     conn.close()
 ```
 
-If a session fixture can't survive the fork, `--parallex-no-session-scope` defers them all
-to the workers (restoring xdist's once-per-worker behaviour).
+If a session fixture can't survive the fork, `--parallex-no-session-scope` leaves them all
+to the workers and you're back to xdist's behaviour.
 
-## The fixture that has to differ per worker
+## Fixtures that differ per worker
 
-Some `scope="session"` fixtures exist precisely *to* differ between workers — the archetype
-being one that carves a database per worker so tests don't tread on each other. Hoisting
-that one would be actively wrong: every worker gets the same database, and a per-test
-`create_all`/`drop_all` then wipes its siblings' schemas mid-test.
+Some session fixtures are supposed to differ between workers — usually one that gives each
+worker its own database. Running that in the controller breaks things: every worker gets
+the same database, and a per-test `create_all`/`drop_all` wipes the other workers' schemas
+while they're using them.
 
-**A fixture that requests `worker_id` — directly or through another fixture — is
-per-worker, and is never hoisted.** Everything else that says `scope="session"` means it.
-No new syntax, because suites already write it this way:
+A fixture that asks for `worker_id`, directly or through another fixture, is per-worker and
+stays in the workers. Everything else scope-session runs once in the controller. There's no
+new syntax for this because suites already write it:
 
 ```python
 @pytest.fixture(scope="session")
-def postgres_server():                          # -> controller. One container.
+def postgres_server():                          # controller: one container
     with PostgresContainer("postgres:16") as pg:
         yield pg.get_connection_url()
 
 @pytest.fixture(scope="session")
-def database_url(worker_id, postgres_server):   # -> per worker. Requests worker_id.
+def database_url(worker_id, postgres_server):   # per worker: asks for worker_id
     url = f"{postgres_server}/test_{worker_id}"
     create_database(url)
     yield url
     drop_database(url)
 ```
 
-One container for the run, one database per worker on it — which is the thing xdist's
-filelock recipe exists to fake. This names the scope xdist conflates: what it calls
-"session" is really per-worker, and here you can have both.
+One container for the run, one database per worker on it. Under xdist you'd need the
+filelock recipe to approximate this.
 
-`worker_id` is also xdist's fixture name, deliberately — it's what makes existing suites
-work unchanged. When both plugins are installed, `--parallel` takes the name so you get a
-real per-worker id; a plain `pytest -n 4` run leaves xdist's alone. `parallex_worker_id`
-is an alias if you'd rather be explicit, and marks a fixture per-worker just the same.
+`worker_id` is xdist's fixture name and that's on purpose — it's what lets existing suites
+work unchanged. If you have both plugins installed, `--parallel` takes the name so you get
+a real per-worker id, and a plain `pytest -n 4` still gets xdist's. `parallex_worker_id` is
+an alias if you'd rather be explicit; it marks a fixture per-worker the same way.
 
 ## Fixtures
 
 | fixture | gives you |
 |---|---|
-| `worker_id` | `'f0'`, `'w1'`, `'a2'`… or `'main'`. Requesting it marks a fixture per-worker |
+| `worker_id` | `'f0'`, `'w1'`, `'a2'`… or `'main'`. Asking for it marks a fixture per-worker |
 | `parallex_worker_id` | the same value, under a name xdist can't shadow |
 | `parallex_mode` | the active mode, or `None` |
 | `parallex_setup_data` | whatever `pytest_parallex_setup` returned |
@@ -161,49 +155,49 @@ is an alias if you'd rather be explicit, and marks a fixture per-worker just the
 ```python
 # conftest.py
 def pytest_parallex_setup(config):
-    """Run once in the controller, before any worker starts. Pre-fork: no I/O handles."""
+    """Runs once in the controller, before any worker starts. Pre-fork, so no I/O handles."""
     return {"token": build_expensive_thing()}
 
 def pytest_parallex_teardown(config, data):
-    """Run once in the controller, after every worker has finished."""
+    """Runs once in the controller, after every worker has finished."""
 
 def pytest_parallex_auto_num_workers(config):
-    """Override --parallel-workers=auto. Default: os.cpu_count()."""
+    """Override --parallel-workers=auto. Defaults to os.cpu_count()."""
     return 8
 ```
 
-## Known limitations
+## Limitations
 
-- **`--maxfail` doesn't stop a fork run early.** Workers run their claimed group to
-  completion and the controller replays the reports afterwards, so the count is right but
-  the run isn't cut short.
-- **Fork parallelizes by module.** A whole suite in one file uses one worker no matter what
-  `--parallel-workers` says.
-- **`fork` is Linux/macOS only.** On Windows, use `--parallel=process`.
-- **`thread`/`async` don't escape the GIL.** They're for suites that wait, not suites that
+- `--maxfail` won't cut a fork run short. Workers finish the group they claimed and the
+  controller replays the reports afterwards, so the count is right but the run isn't
+  stopped early.
+- fork splits work by module, so a suite in a single file uses one worker regardless of
+  `--parallel-workers`.
+- fork is Linux and macOS only. On Windows use `--parallel=process`.
+- thread and async don't get around the GIL. They help suites that wait, not suites that
   compute.
+- Needs pytest 8.1 or newer. (8.0 changed the signature of an internal we rely on.)
 
 ## Developing
 
 ```bash
 uv sync                # toolchain
 make install-hooks     # one-time, after cloning
-make check             # lint + typecheck + test, exactly what CI runs
+make check             # lint + typecheck + test, same as CI
 ```
 
 ## Releasing
 
-The version in `pyproject.toml` is the single source of truth, and releases are automated:
+The version in `pyproject.toml` is the source of truth, and releases are automated:
 
-1. **`pre-commit` auto-bumps** the patch version whenever a commit touches `src/` (run
-   `make install-hooks` once after cloning). Doc/test/config-only commits don't bump. For
-   an intentional minor/major release, bump deliberately: `make bump TYPE=minor`.
-2. **`version-guard`** (part of `moon run :ci`) enforces the same rule non-bypassably in
-   CI: a push or MR that changes `src/` without a version bump fails the pipeline, catching
-   `--no-verify` and unhooked clones.
-3. **`:release`** runs on a green `main` pipeline: if `pyproject`'s version isn't on PyPI
-   yet, it publishes via OIDC Trusted Publishing. So merging a version bump to `main`
-   releases itself — no second pipeline, no tag required.
+1. The `pre-commit` hook bumps the patch version when a commit touches `src/` (run
+   `make install-hooks` once after cloning). Doc, test and config commits don't bump. For a
+   minor or major release, do it deliberately: `make bump TYPE=minor`.
+2. `version-guard` enforces the same rule in CI, so `--no-verify` and unhooked clones don't
+   get around it.
+3. `:release` runs on a green `main` pipeline and publishes via OIDC trusted publishing if
+   the version isn't on PyPI yet. Merging a version bump to `main` is the release — no tag,
+   no second pipeline.
 
 ## License
 
