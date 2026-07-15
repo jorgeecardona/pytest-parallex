@@ -202,6 +202,7 @@ class ForkRunner:
     ) -> int:
         """Claim groups until the queue drains, then pickle this worker's reports."""
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
+        session: pytest.Session = self.config._parallex_session  # type: ignore[attr-defined]
 
         # The child must not re-enter this runner's runtestloop.
         self.config.pluginmanager.unregister(name="parallel-runner")
@@ -220,7 +221,7 @@ class ForkRunner:
 
         # The controller owns the session fixtures it set up pre-fork; this child must not
         # finalize its inherited copies. See session_scope.detach_in_child.
-        detach_in_child(self.config._parallex_session)  # type: ignore[attr-defined]
+        detach_in_child(session)
 
         trace = os.environ.get("PARALLEX_TRACE")
 
@@ -234,16 +235,32 @@ class ForkRunner:
             if trace:
                 _trace(f"{worker_id} claimed group {index} ({len(group)} tests) t={time.monotonic():.2f}")
             for i, item in enumerate(group):
-                # nextitem=None at a group's end tears down every scope above the item,
-                # session included — which would make the next group this worker claims
-                # rebuild it. That is safe only because detach_in_child() already emptied
-                # the Session's finalizer list: the unwind reaches the Session and finds
-                # nothing to run, so cached_result survives for the next group. Module and
-                # class scopes still tear down properly, which is what we want.
-                nextitem = group[i + 1] if i + 1 < len(group) else None
+                # nextitem=session at a group's end, not None. None means "nothing
+                # follows, unwind everything" — including session scope. Naming the
+                # session stops the unwind one level short, so module and class scopes
+                # tear down between groups (which we want) and session scope survives to
+                # the next group this worker claims.
+                #
+                # detach_in_child() is not enough on its own here. It empties the
+                # finalizers for fixtures the *controller* hoisted, so unwinding past
+                # them is harmless. But a fixture the child builds *itself* — every
+                # worker-scoped one, i.e. anything downstream of worker_id, which is
+                # exactly what the hoisting feature deliberately leaves to the workers —
+                # registers its finalizer here, after that emptying, and None tore it
+                # down at every group boundary. A worker claiming three groups built its
+                # per-worker database three times, dropping and re-carving it mid-run.
+                nextitem = group[i + 1] if i + 1 < len(group) else session
                 item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
             if trace:
                 _trace(f"{worker_id} finished group {index} t={time.monotonic():.2f}")
+
+        # The queue is drained, so now — once per worker, not once per group — finalize
+        # what this child set up. Without this the child would os._exit over its own
+        # fixtures and a per-worker database would never be dropped. The controller's
+        # hoisted fixtures are untouched: detach_in_child() already dropped their
+        # finalizers, and the controller finalizes them itself after every worker exits.
+        for name, err in teardown_session_fixtures(session):
+            _trace(f"{worker_id}: worker-scoped fixture {name!r} failed to tear down: {err}")
 
         write_reports(path, collector.collected)
         return 0

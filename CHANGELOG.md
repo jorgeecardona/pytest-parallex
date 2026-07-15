@@ -33,3 +33,12 @@ First release.
 - **pytest >= 8.1**, not 8.0: `FixtureManager.getfixturedefs` took a nodeid string until
   8.1 and a `Node` from 8.1 on, and the fork runner passes a `Node`.
 - Tested against pytest 8.1, 8.4, 9.0 and 9.1 across all four modes. CI pins the floor.
+
+### Worker-scoped fixtures
+
+- A `scope="session"` fixture that requests `worker_id` (directly or transitively) is
+  per-worker and is never hoisted to the controller — so `postgres_server` (one container)
+  and `database_url(worker_id)` (one database per worker) can coexist, which is what
+  xdist's filelock recipe exists to fake.
+- `worker_id` is provided by parallex when `--parallel` is active, registered late enough
+  to win the name from pytest-xdist. A plain `pytest -n 4` run keeps xdist's.

@@ -113,16 +113,48 @@ def db(db_url):
 If a session fixture can't survive the fork, `--parallex-no-session-scope` defers them all
 to the workers (restoring xdist's once-per-worker behaviour).
 
+## The fixture that has to differ per worker
+
+Some `scope="session"` fixtures exist precisely *to* differ between workers — the archetype
+being one that carves a database per worker so tests don't tread on each other. Hoisting
+that one would be actively wrong: every worker gets the same database, and a per-test
+`create_all`/`drop_all` then wipes its siblings' schemas mid-test.
+
+**A fixture that requests `worker_id` — directly or through another fixture — is
+per-worker, and is never hoisted.** Everything else that says `scope="session"` means it.
+No new syntax, because suites already write it this way:
+
+```python
+@pytest.fixture(scope="session")
+def postgres_server():                          # -> controller. One container.
+    with PostgresContainer("postgres:16") as pg:
+        yield pg.get_connection_url()
+
+@pytest.fixture(scope="session")
+def database_url(worker_id, postgres_server):   # -> per worker. Requests worker_id.
+    url = f"{postgres_server}/test_{worker_id}"
+    create_database(url)
+    yield url
+    drop_database(url)
+```
+
+One container for the run, one database per worker on it — which is the thing xdist's
+filelock recipe exists to fake. This names the scope xdist conflates: what it calls
+"session" is really per-worker, and here you can have both.
+
+`worker_id` is also xdist's fixture name, deliberately — it's what makes existing suites
+work unchanged. When both plugins are installed, `--parallel` takes the name so you get a
+real per-worker id; a plain `pytest -n 4` run leaves xdist's alone. `parallex_worker_id`
+is an alias if you'd rather be explicit, and marks a fixture per-worker just the same.
+
 ## Fixtures
 
 | fixture | gives you |
 |---|---|
-| `parallex_worker_id` | `'f0'`, `'w1'`, `'a2'`… or `'main'` when not parallel |
+| `worker_id` | `'f0'`, `'w1'`, `'a2'`… or `'main'`. Requesting it marks a fixture per-worker |
+| `parallex_worker_id` | the same value, under a name xdist can't shadow |
 | `parallex_mode` | the active mode, or `None` |
 | `parallex_setup_data` | whatever `pytest_parallex_setup` returned |
-
-`parallex_worker_id`, not `worker_id`: pytest-xdist already owns that name, and a suite
-that parallelizes is exactly the suite likely to have both installed.
 
 ## Hooks
 
