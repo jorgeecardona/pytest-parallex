@@ -21,8 +21,17 @@ mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
 #    (bump-version also refreshes uv.lock's pinned version, so stage both to keep
 #    the commit self-consistent.)
 if printf '%s\n' "${staged[@]}" | grep -qE '^src/.*\.py$'; then
-    ./scripts/bump-version patch
-    git add pyproject.toml uv.lock
+    # ...unless the version line is already moving in this commit. `make bump TYPE=minor`
+    # followed by a commit that also touches src/ would otherwise bump twice: once by
+    # hand, once here. That silently skips a version (0.1.1 -> 0.1.2 -> 0.1.3), and worse,
+    # it turns a deliberate `TYPE=minor` into a minor+patch. The invariant this hook
+    # actually wants is "the version moved", not "this hook moved it".
+    if git diff --cached -- pyproject.toml | grep -qE '^\+version = "'; then
+        echo "pre-commit: version already bumped in this commit -- leaving it alone"
+    else
+        ./scripts/bump-version patch
+        git add pyproject.toml uv.lock
+    fi
 fi
 
 # 2. lint staged Python (fast; pyright + tests run in pre-push)
