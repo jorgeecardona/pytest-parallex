@@ -24,6 +24,7 @@ def _suite(header: str, *body: str) -> str:
     """
     return textwrap.dedent(header).strip() + "\n\n" + "\n".join(body) + "\n"
 
+
 # Modes that share one interpreter, so `scope="session"` genuinely means once. `process`
 # is excluded on purpose: a fresh interpreter per worker re-runs session fixtures by
 # construction, which is the xdist behaviour `fork` exists to fix.
@@ -224,9 +225,7 @@ class TestFailureCounting:
 
         counter = pytester.path / "testsfailed"
         assert counter.exists(), "sessionfinish never ran in the controller"
-        assert counter.read_text() == "3", (
-            f"testsfailed={counter.read_text()} for 3 failing tests"
-        )
+        assert counter.read_text() == "3", f"testsfailed={counter.read_text()} for 3 failing tests"
 
 
 class TestWorkerIdentity:
@@ -343,9 +342,7 @@ class TestForkOutput:
             test_b="def test_b(): assert True",
             test_c="def test_c(): assert True",
         )
-        result = pytester.runpytest_subprocess(
-            "--parallel=fork", "--parallel-workers=3", "-s"
-        )
+        result = pytester.runpytest_subprocess("--parallel=fork", "--parallel-workers=3", "-s")
         result.stdout.fnmatch_lines(["*3 passed*"])
         assert result.stdout.str().count("CONTROLLER_MARKER") == 1
 

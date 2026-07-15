@@ -82,4 +82,3 @@ class ThreadRunner:
         clear_fixture_locks()
         data = getattr(self.config, "_parallel_setup_data", {})
         self.config.hook.pytest_parallex_teardown(config=self.config, data=data)
-

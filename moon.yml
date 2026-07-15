@@ -51,12 +51,14 @@ tasks:
 
   # The single aggregate gate: the whole CI check graph in one target.
   # No docs task here (unlike musil): this project's docs are README + docs/*.md, with
-  # no mkdocs build to fail. format-check is intentionally out of the gate until the
-  # tree is ruff-format-clean; run `make format` and add it here once it is.
+  # no mkdocs build to fail. format-check IS in the gate here, which musil's isn't —
+  # only because this project is new enough that getting format-clean cost 6 files
+  # instead of 41. Cheaper to gate it from the start than to retrofit it later.
   ci:
     command: 'noop'
     deps:
       - '~:lint'
+      - '~:format-check'
       - '~:typecheck'
       - '~:test'
       - '~:test-pytest-floor'

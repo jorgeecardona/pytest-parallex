@@ -61,6 +61,4 @@ def raise_if_collection_failed(session: pytest.Session) -> None:
     """
     if session.testsfailed and not session.config.option.continue_on_collection_errors:
         errors = session.testsfailed
-        raise session.Interrupted(
-            f"{errors} error{'s' if errors != 1 else ''} during collection"
-        )
+        raise session.Interrupted(f"{errors} error{'s' if errors != 1 else ''} during collection")

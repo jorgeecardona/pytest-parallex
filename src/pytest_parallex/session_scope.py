@@ -87,9 +87,7 @@ def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     defs = item.session._fixturemanager.getfixturedefs(name, item)
     if not defs:
         return False
-    return any(
-        is_worker_scoped(dep, item, _depth + 1) for dep in getattr(defs[-1], "argnames", ())
-    )
+    return any(is_worker_scoped(dep, item, _depth + 1) for dep in getattr(defs[-1], "argnames", ()))
 
 
 def session_fixture_names(session: pytest.Session) -> list[str]:

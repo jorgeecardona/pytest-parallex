@@ -152,8 +152,6 @@ class TestThreadConcurrency:
             def test_c():
                 assert True
         """)
-        result = pytester.runpytest(
-            "--parallel=thread", "--parallel-workers=1", "--maxfail=1"
-        )
+        result = pytester.runpytest("--parallel=thread", "--parallel-workers=1", "--maxfail=1")
         # Should stop after first failure
         result.stdout.fnmatch_lines(["*1 failed*"])

@@ -94,8 +94,10 @@ class ForkRunner:
                 if eager.names and os.environ.get("PARALLEX_TRACE"):
                     _trace(f"session fixtures set up once in controller: {', '.join(eager.names)}")
                 for name, err in eager.failures:
-                    _trace(f"session fixture {name!r} failed in the controller ({err}); "
-                           f"leaving it to the worker that needs it")
+                    _trace(
+                        f"session fixture {name!r} failed in the controller ({err}); "
+                        f"leaving it to the worker that needs it"
+                    )
 
         # Stop the background threads we know how to restart (logging QueueListeners, which
         # litestar and anything using QueueHandler start at import). Refusing to fork over
@@ -234,7 +236,9 @@ class ForkRunner:
                 break
             group = groups[index]
             if trace:
-                _trace(f"{worker_id} claimed group {index} ({len(group)} tests) t={time.monotonic():.2f}")
+                _trace(
+                    f"{worker_id} claimed group {index} ({len(group)} tests) t={time.monotonic():.2f}"
+                )
             for i, item in enumerate(group):
                 # nextitem=session at a group's end, not None. None means "nothing
                 # follows, unwind everything" — including session scope. Naming the
