@@ -530,15 +530,25 @@ class TestHoistingUnderStrictWarnings:
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason=(
+        "These do a real os.fork() with sys.platform faked to 'darwin', so the child runs "
+        "the macOS-only hardening (urllib _scproxy manipulation, subprocess DNS resolver). "
+        "That is defined behaviour on a Mac and undefined on Linux — it SIGSEGV'd "
+        "non-reproducibly in the CI container (exit 139) while passing on every dev box. "
+        "The hardening logic is covered deterministically off-fork in "
+        "test_plugin.py::TestDarwinForkCaveat / TestDarwinScproxyGuard; this class exists "
+        "to run the same seam end-to-end where the platform is real, i.e. on a Mac."
+    ),
+)
 class TestDarwinForkEndToEnd:
-    """A full fork run through the darwin branch, on any host.
+    """A full fork run through the darwin branch, on an actual Mac.
 
-    CI runs Linux only, so the darwin code in ``assert_forkable`` and the child-side
-    hardening are never traversed by the other end-to-end tests there. Faking
-    ``sys.platform`` around an in-process run keeps the whole seam — caveat emission
-    mid-runtestloop, ``harden_darwin_fork_child`` in the forked children — under
-    automatic regression coverage. The real segfaults can't reproduce off a Mac, but
-    every line of our handling of them can.
+    Faking ``sys.platform`` and forking into macOS C-level manipulation is undefined off
+    darwin (it crashed CI), so this runs only where the platform is genuine. The per-line
+    coverage of the hardening functions lives in test_plugin.py, which calls them directly
+    without forking and runs everywhere.
     """
 
     def test_strict_warnings_run_survives_darwin_caveat(
