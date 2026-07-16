@@ -36,7 +36,7 @@ tasks:
   # executed on 3.12/3.13 while requires-python said >=3.10. (It passed when finally run —
   # unlike the pytest floor, which was fiction — but now it's enforced, not asserted.)
   test-pytest-floor:
-    command: 'uv run --isolated --python 3.10 --with-editable . --with pytest==8.1.0 --with pytest-xdist --with pytest-asyncio pytest -q'
+    command: 'uv run --isolated --python 3.10 --with-editable . --with pytest==8.1.1 --with pytest-xdist --with pytest-asyncio pytest -q'
     inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
 
   docs:

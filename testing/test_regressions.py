@@ -557,9 +557,14 @@ class TestDarwinForkEndToEnd:
 
         result = pytester.runpytest("--parallel=fork", "--parallel-workers=1")
 
+        # The regression is survival: the run completes and the test passes, where the
+        # plain warnings.warn under strict warnings used to INTERNALERROR before any test
+        # forked. That the caveat *text* is emitted (and on which channel) is version-
+        # dependent capture and is unit-tested deterministically in
+        # test_plugin.py::TestDarwinForkCaveat — not re-asserted here, where it was flaky
+        # across pytest 8.1 (py3.10 floor) vs 9.
         result.assert_outcomes(passed=1)
         assert "INTERNALERROR" not in str(result.stdout)
-        assert "OBJC_DISABLE_INITIALIZE_FORK_SAFETY" in str(result.stderr)
 
     def test_children_are_hardened(
         self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch

@@ -8,6 +8,22 @@ import logging.handlers
 import os
 import sys
 import threading
+
+try:
+    import urllib.request
+except ModuleNotFoundError:
+    # Only reachable when sys.platform is faked to 'darwin' off-mac before this module
+    # first imports (the cross-platform darwin tests do exactly that): python 3.10's
+    # urllib.request runs `from _scproxy import ...` at module level under darwin, and
+    # _scproxy is a darwin-only C module. The missing module proves the platform claim is
+    # false, so import again with the fake masked. A real mac never enters this branch.
+    _claimed_platform = sys.platform
+    sys.platform = "linux"
+    try:
+        import urllib.request
+    finally:
+        sys.platform = _claimed_platform
+    del _claimed_platform
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -116,7 +132,12 @@ def harden_darwin_fork_child() -> None:
     if sys.platform != "darwin":
         return
 
-    import urllib.request
+    # urllib.request is imported at module top, under the REAL platform. Importing it
+    # here instead broke py3.10 workers in the cross-platform tests: with sys.platform
+    # faked to 'darwin', a FIRST import of urllib.request executes its darwin branch and
+    # dies on Linux with "No module named '_scproxy'" (on 3.12 the module happened to be
+    # cached before the fake; 3.10 imported it fresh, and CI escalated that to a dead
+    # worker). Binding it at import time makes the fake irrelevant.
 
     def _no_proxy_bypass(host: object, *args: object, **kwargs: object) -> bool:
         del host, args, kwargs
