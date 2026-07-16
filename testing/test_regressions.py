@@ -104,6 +104,54 @@ class TestFixtureCaching:
         assert result.ret != 0
 
 
+class TestFunctionFixtureIsolation:
+    """The bug that shipped in 0.1.1-0.1.4 and that the old suite could not see.
+
+    ``FixtureDef`` keeps one ``cached_result`` and one ``_finalizers`` list, shared across
+    threads. For a *function*-scoped fixture — the overwhelmingly common kind — two workers
+    running two tests share that one slot, so one thread's setup runs while another's
+    teardown clears it: pytest dies with a bare ``AssertionError`` inside ``execute``, or a
+    fixture just fails to set up. The old test used 2 tests on 2 workers and got lucky on
+    timing; the plugin was unsound for ``@pytest.fixture`` the whole time.
+
+    Fixed by making those two attributes per-thread for function scope (session/module
+    stay shared — that is the feature). These assert on it directly: each test checks it
+    got *its own* fixture value, and that setups and teardowns balance.
+    """
+
+    @pytest.mark.parametrize("mode", ["thread", "async"])
+    def test_each_test_gets_its_own_function_fixture(self, pytester, mode):
+        pytester.makepyfile(
+            """
+            import time
+
+            import pytest
+
+            @pytest.fixture
+            def res(request):
+                name = request.node.name
+                with open("setups", "a") as fh:
+                    fh.write("x")
+                yield name
+                with open("teardowns", "a") as fh:
+                    fh.write("x")
+
+            @pytest.mark.parametrize("n", range(24))
+            def test_n(n, res):
+                time.sleep(0.01)              # widen the window for the race
+                assert res == f"test_n[{n}]"  # must be THIS test's value, not a neighbour's
+            """
+        )
+        result = pytester.runpytest(f"--parallel={mode}", "--parallel-workers=6")
+        # A single cross-thread bleed flips one of these asserts, so passed=24 is the claim.
+        result.assert_outcomes(passed=24)
+
+        setups = len((pytester.path / "setups").read_text())
+        teardowns = len((pytester.path / "teardowns").read_text())
+        assert setups == 24, f"{setups} setups, expected one per test"
+        assert teardowns == 24, f"{teardowns} teardowns, expected one per test"
+
+
 class TestTeardownOrdering:
     @pytest.mark.parametrize("mode", ALL_MODES)
     def test_workers_do_not_tear_down_each_others_scopes(self, pytester, mode):

@@ -1,28 +1,41 @@
-"""Integration tests for the async runner."""
+"""Integration tests for the async runner.
+
+The async runner is the thread runner driven from an event loop, so its fixture behaviour
+is covered by the parametrised regressions in test_regressions.py (which run every mode).
+These cover the async-specific surface, and assert on what happened rather than on the
+summary line — see the header of test_thread.py for why that distinction is the point.
+"""
 
 from __future__ import annotations
 
+from conftest import suite
+
 
 class TestAsyncBasic:
-    def test_simple_pass(self, pytester):
-        pytester.makepyfile("""
-            def test_a():
-                assert True
+    def test_tests_actually_run_on_workers(self, pytester):
+        """Not serial-in-disguise: async workers report 'a0'/'a1', a serial run 'main'."""
+        pytester.makepyfile(
+            """
+            def test_a(worker_id):
+                with open("who", "a") as fh:
+                    fh.write(worker_id + "\\n")
 
-            def test_b():
-                assert True
-        """)
-        result = pytester.runpytest("--parallel=async", "--parallel-workers=2", "-v")
-        result.stdout.fnmatch_lines(["*2 passed*"])
-        assert result.ret == 0
+            def test_b(worker_id):
+                with open("who", "a") as fh:
+                    fh.write(worker_id + "\\n")
+            """
+        )
+        result = pytester.runpytest("--parallel=async", "--parallel-workers=2")
+        result.assert_outcomes(passed=2)
 
-    def test_simple_fail(self, pytester):
-        pytester.makepyfile("""
-            def test_a():
-                assert False
-        """)
+        who = set((pytester.path / "who").read_text().split())
+        assert who and "main" not in who, f"ran serially: {who}"
+        assert all(w.startswith("a") for w in who), who
+
+    def test_reports_failures(self, pytester):
+        pytester.makepyfile("def test_a(): assert False")
         result = pytester.runpytest("--parallel=async", "--parallel-workers=1")
-        result.stdout.fnmatch_lines(["*1 failed*"])
+        result.assert_outcomes(failed=1)
         assert result.ret == 1
 
     def test_empty_suite(self, pytester):
@@ -30,23 +43,40 @@ class TestAsyncBasic:
         result = pytester.runpytest("--parallel=async", "--parallel-workers=2")
         assert result.ret == 5  # EXIT_NOTESTSCOLLECTED
 
-    def test_session_fixture_runs_once(self, pytester):
-        pytester.makepyfile("""
+    def test_every_test_runs_exactly_once(self, pytester):
+        pytester.makepyfile(
+            """
             import pytest
 
-            call_count = 0
+            @pytest.mark.parametrize("n", range(12))
+            def test_n(n):
+                with open("ran", "a") as fh:
+                    fh.write(f"{n}\\n")
+            """
+        )
+        result = pytester.runpytest("--parallel=async", "--parallel-workers=4")
+        result.assert_outcomes(passed=12)
+        ran = (pytester.path / "ran").read_text().split()
+        assert sorted(map(int, ran)) == list(range(12)), sorted(ran)
 
-            @pytest.fixture(scope="session")
-            def shared():
-                global call_count
-                call_count += 1
-                return call_count
+    def test_session_fixture_body_runs_once(self, pytester):
+        pytester.makepyfile(
+            suite(
+                """
+                import time
 
-            def test_a(shared):
-                assert shared == 1
+                import pytest
 
-            def test_b(shared):
-                assert shared == 1
-        """)
-        result = pytester.runpytest("--parallel=async", "--parallel-workers=2", "-v")
-        result.stdout.fnmatch_lines(["*2 passed*"])
+                @pytest.fixture(scope="session")
+                def shared():
+                    time.sleep(0.2)
+                    with open("setups", "a") as fh:
+                        fh.write("x")
+                    return 42
+                """,
+                *(f"def test_{i}(shared): assert shared == 42" for i in range(8)),
+            )
+        )
+        result = pytester.runpytest("--parallel=async", "--parallel-workers=4")
+        result.assert_outcomes(passed=8)
+        assert len((pytester.path / "setups").read_text()) == 1

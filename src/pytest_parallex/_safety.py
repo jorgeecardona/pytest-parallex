@@ -145,6 +145,7 @@ class ThreadLocalSetupStateProxy:
 _fixture_locks: dict[int, threading.RLock] = {}
 _fixture_locks_lock = threading.Lock()
 _original_execute: Any = None
+_MISSING = object()
 
 
 def _get_fixture_lock(fixturedef_id: int) -> threading.RLock:
@@ -156,18 +157,81 @@ def _get_fixture_lock(fixturedef_id: int) -> threading.RLock:
         return _fixture_locks[fixturedef_id]
 
 
-def install_fixture_execute_lock() -> None:
-    """Serialize ``FixtureDef.execute`` per fixturedef, for the threaded runners.
+class _ScopeAwareState:
+    """A ``FixtureDef`` attribute that is per-thread for function scope, shared otherwise.
 
-    Patching a pytest internal is a real cost, taken because the alternative doesn't
-    exist: the critical section starts before any hook we can register runs.
+    This is the fix for the bug that hid behind "function fixtures have nothing to share".
+    The *value* a function fixture produces is per-test, yes — but the ``FixtureDef``
+    object holding it is one object shared by every worker, and pytest keeps a *single*
+    ``cached_result`` (and one ``_finalizers`` list) on it, tearing the previous test's
+    value down before building the next. Two threads running two tests then trample one
+    slot: thread B's setup calls ``finish()`` on thread A's still-live fixture, and pytest
+    dies with a bare ``AssertionError`` from inside ``execute``, or a fixture silently
+    fails to set up at all. A plain 2-test/2-worker run hit it about half the time; it was
+    shipped broken.
 
-    Function-scoped fixtures are left alone. They are per-test by definition, so there is
-    nothing to share and no reason to make every test queue behind one lock.
+    Serializing ``execute`` cannot fix this — the collision is between one thread's setup
+    and another's *teardown*, which runs on a different call path. The slot itself has to
+    be per-thread.
 
-    Deadlock: a fixture resolves its dependencies while holding its own lock, so thread A
-    can hold X and want Y while B holds Y and wants X only if X and Y depend on each
-    other — a cycle, which pytest rejects at collection.
+    Installed as a data descriptor on the ``FixtureDef`` class, so it intercepts every
+    instance including ones collected before we patched. Function scope reads and writes a
+    ``threading.local`` kept on the instance; every other scope reads and writes the
+    instance dict exactly as before, because session/module/class fixtures are *meant* to
+    be one shared value — that is the whole plugin.
+    """
+
+    def __init__(self, name: str, default_factory: Any) -> None:
+        self._shared = f"_parallex_shared_{name}"
+        self._tls = f"_parallex_tls_{name}"
+        self._default_factory = default_factory  # e.g. list, or a lambda returning None
+
+    def _thread_slot(self, obj: Any) -> Any:
+        tls = obj.__dict__.get(self._tls)
+        if tls is None:
+            tls = threading.local()
+            obj.__dict__[self._tls] = tls
+        return tls
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self
+        if obj.scope == "function":
+            tls = self._thread_slot(obj)
+            value = getattr(tls, "value", _MISSING)
+            if value is _MISSING:
+                value = self._default_factory()
+                tls.value = value
+            return value
+        value = obj.__dict__.get(self._shared, _MISSING)
+        if value is _MISSING:
+            value = self._default_factory()
+            obj.__dict__[self._shared] = value
+        return value
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        if obj.scope == "function":
+            self._thread_slot(obj).value = value
+        else:
+            obj.__dict__[self._shared] = value
+
+
+def install_fixture_thread_safety() -> None:
+    """Make ``FixtureDef`` safe to drive from several threads, for the threaded runners.
+
+    Two patches on one pytest internal, installed together because they are one concern:
+
+    * ``execute`` is serialized per fixturedef so a *shared* (session/module/class) fixture
+      is built exactly once even when several workers request it at once. The critical
+      section starts before any hook we could register runs, so wrapping the method is the
+      shallowest thing that works. Function scope skips the lock — it now has its own
+      per-thread state and nothing to contend on.
+    * ``cached_result`` and ``_finalizers`` become per-thread for function scope (see
+      ``_ScopeAwareState``), so two workers running two tests don't share one setup slot.
+
+    Deadlock on the lock: a fixture resolves its dependencies while holding its own lock,
+    so A-holds-X-wants-Y against B-holds-Y-wants-X needs X and Y to depend on each other —
+    a cycle, which pytest rejects at collection.
     """
     global _original_execute
     if _original_execute is not None:
@@ -184,10 +248,59 @@ def install_fixture_execute_lock() -> None:
             return _original_execute(self, request)
 
     FixtureDef.execute = locked_execute  # type: ignore[method-assign]
+    FixtureDef.cached_result = _ScopeAwareState("cached_result", lambda: None)  # type: ignore[assignment]
+    FixtureDef._finalizers = _ScopeAwareState("_finalizers", list)  # type: ignore[assignment]
+
+    _install_tolerant_current_test_var()
 
 
-def uninstall_fixture_execute_lock() -> None:
-    """Put ``FixtureDef.execute`` back.
+_original_current_test_var: Any = None
+
+
+def _install_tolerant_current_test_var() -> None:
+    """Stop pytest's ``PYTEST_CURRENT_TEST`` bookkeeping from crashing under threads.
+
+    pytest keeps the name of the running test in the ``PYTEST_CURRENT_TEST`` environment
+    variable and deletes it at teardown with a bare ``os.environ.pop(name)`` — no default,
+    so a missing key raises. ``os.environ`` is one process-global dict shared by every
+    worker thread, and several tests are "current" at once, so two teardowns racing to pop
+    it means the second gets ``KeyError: 'PYTEST_CURRENT_TEST'`` and the test errors in
+    teardown having actually passed.
+
+    The value is only ever used to name the running test in a crash dump, and it is
+    already meaningless here (whichever thread wrote last wins). So we make the delete
+    tolerant and leave the rest alone. xdist never hits this because each worker is its own
+    process with its own environ; sharing one is the cost of thread-based parallelism.
+    """
+    global _original_current_test_var
+    if _original_current_test_var is not None:
+        return
+
+    from _pytest import runner
+
+    _original_current_test_var = runner._update_current_test_var
+
+    def tolerant(item, when):  # type: ignore[no-untyped-def]
+        if when is None:
+            os.environ.pop("PYTEST_CURRENT_TEST", None)  # was pop(name) — raised on a race
+        else:
+            _original_current_test_var(item, when)
+
+    runner._update_current_test_var = tolerant  # type: ignore[attr-defined]
+
+
+def _uninstall_tolerant_current_test_var() -> None:
+    global _original_current_test_var
+    if _original_current_test_var is None:
+        return
+    from _pytest import runner
+
+    runner._update_current_test_var = _original_current_test_var  # type: ignore[attr-defined]
+    _original_current_test_var = None
+
+
+def uninstall_fixture_thread_safety() -> None:
+    """Put ``FixtureDef`` back.
 
     Not hygiene for its own sake: pytest's own ``pytester`` runs test sessions in *this*
     interpreter, so a patch left installed leaks out of the session that made it and into
@@ -200,6 +313,13 @@ def uninstall_fixture_execute_lock() -> None:
     from _pytest.fixtures import FixtureDef
 
     FixtureDef.execute = _original_execute  # type: ignore[method-assign]
+    # Drop the descriptors so the next in-process session's FixtureDefs use plain instance
+    # attributes again. Their leftover ``_parallex_*`` dict keys are harmless — nothing
+    # reads them once the descriptor is gone.
+    for attr in ("cached_result", "_finalizers"):
+        if isinstance(FixtureDef.__dict__.get(attr), _ScopeAwareState):
+            delattr(FixtureDef, attr)
+    _uninstall_tolerant_current_test_var()
     _original_execute = None
 
 
@@ -242,6 +362,6 @@ def clear_fixture_locks() -> None:
     collected — so a lock kept past the session it belongs to could later be handed out
     for an unrelated fixture that happens to land on the same address.
     """
-    uninstall_fixture_execute_lock()
+    uninstall_fixture_thread_safety()
     with _fixture_locks_lock:
         _fixture_locks.clear()

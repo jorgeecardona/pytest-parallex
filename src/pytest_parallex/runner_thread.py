@@ -25,7 +25,7 @@ from pytest_parallex._safety import (
     ThreadLocalSetupStateProxy,
     ThreadSafeReporter,
     clear_fixture_locks,
-    install_fixture_execute_lock,
+    install_fixture_thread_safety,
 )
 from pytest_parallex.scheduler import schedule_round_robin
 
@@ -40,7 +40,7 @@ class ThreadRunner:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
         self.config.pluginmanager.register(ThreadSafeReporter(), "thread-safe-reporter")
-        install_fixture_execute_lock()
+        install_fixture_thread_safety()
 
     @pytest.hookimpl
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
