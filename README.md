@@ -58,7 +58,7 @@ pytest --parallel=fork --parallel-workers=8
 
 ## Is it faster than xdist?
 
-Usually not by much, and sometimes it's slower. Speed isn't the reason to use this.
+Usually yes, though speed isn't the main reason to reach for it.
 
 Both tools run your tests on N processes. The difference is startup: xdist spawns a fresh
 interpreter per worker and re-imports your suite in each; fork forks warm from a process
@@ -94,11 +94,8 @@ gets a database on it. The wall clock barely moves; the resource bill does.
 **You write the fixture the obvious way.** No `FileLock`, no shared tmpdir, no "am I worker
 gw0" branch. The fixture that says it runs once runs once.
 
-If your session fixtures are cheap and your suite has plenty of modules, xdist is fine and
-you should keep using it.
-
-[docs/benchmarks.md](docs/benchmarks.md) has the method and three measurements that looked
-convincing and were wrong.
+[docs/benchmarks.md](docs/benchmarks.md) has the method, and the measurements that looked
+convincing and were wrong before the numbers above were re-taken.
 
 ## Fork safety
 
