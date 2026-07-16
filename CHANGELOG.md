@@ -43,3 +43,23 @@ carry a version bump, and 0.1.0 never left this repo. Nothing was released as 0.
   xdist's filelock recipe exists to fake.
 - `worker_id` is provided by parallex when `--parallel` is active, registered late enough
   to win the name from pytest-xdist. A plain `pytest -n 4` run keeps xdist's.
+
+## 0.1.10
+
+Driven by the first real-world macOS run and a coverage-gated CI adoption.
+
+- **End-of-run summary line** — `pytest-parallex fork: 4 worker(s), 12 claim(s) |
+  session fixtures: 3 hoisted, 1 per-worker`. "N passed" is the same string whether the
+  plugin parallelised, degraded, or did nothing; this line is what tells those apart, and
+  a failed hoist now says `FAILED to hoist` right in the summary.
+- **macOS: the `_scproxy` fork segfault is disarmed in workers** (urllib proxy lookup
+  rebound to the environment path; `no_proxy='*'` set when nothing proxy-ish exists).
+  Found on a real suite: botocore's proxy detection segfaulted every worker, and
+  `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` did not help — different trap. The darwin warning
+  now explains both traps.
+- **Coverage under fork works** with `patch = ["fork"]` + `parallel = true` +
+  `COVERAGE_PROCESS_START`: workers save their data explicitly before `os._exit` (which
+  otherwise skips coverage's exit hook — measured: a 70%-gated suite read 39.8%).
+- A session fixture that fails to hoist no longer poisons workers with the controller's
+  cached exception; the worker builds it fresh and a real failure is attributed to the
+  test that wanted it.

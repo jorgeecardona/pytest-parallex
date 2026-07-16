@@ -222,3 +222,30 @@ def parallex_setup_data(request: pytest.FixtureRequest) -> dict[str, Any]:
 def parallex_mode(request: pytest.FixtureRequest) -> str | None:
     """The active parallel mode, or None."""
     return request.config.getoption("parallel_mode", default=None)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """One line of ground truth about what the parallel run actually did.
+
+    'N passed' is the same string whether the plugin parallelised, degraded, or did
+    nothing — this session's worst bugs (the runner that never ran, hoisting silently
+    disabled under filterwarnings=error) were invisible precisely because no output
+    distinguished those. This line is the distinguisher: worker count says it ran,
+    'hoisted/per-worker/FAILED' says what the session-scope machinery actually decided.
+    """
+    stats = getattr(config, "_parallex_stats", None)
+    if not stats:
+        return
+
+    line = f"pytest-parallex {stats['mode']}: {stats['workers']} worker(s)"
+    if stats["mode"] == "fork":
+        line += f", {stats['claims']} claim(s)"
+        parts = [f"{stats['hoisted']} hoisted"]
+        if stats["per_worker"]:
+            parts.append(f"{stats['per_worker']} per-worker")
+        if stats["hoist_failed"]:
+            parts.append(
+                f"{stats['hoist_failed']} FAILED to hoist (ran per-worker; PARALLEX_TRACE=1 for why)"
+            )
+        line += " | session fixtures: " + ", ".join(parts)
+    terminalreporter.write_line(line)

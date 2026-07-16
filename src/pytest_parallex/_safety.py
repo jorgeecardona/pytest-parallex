@@ -84,6 +84,45 @@ def assert_forkable() -> None:
     _warn_darwin_fork_caveat()
 
 
+def harden_darwin_fork_child() -> None:
+    """Disarm macOS's ``_scproxy`` segfault inside a forked worker. No-op elsewhere.
+
+    Verified root cause from a real Mac (redacted suite): forked workers died with
+    SIGSEGV — wait status 11, zero results — inside CPython's
+    ``urllib.request.proxy_bypass_macosx_sysconf``, reached from botocore's proxy
+    detection during client creation. That path calls the SystemConfiguration framework
+    via ``_scproxy``, which is documented fork-unsafe on macOS.
+    ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` does NOT cover it (tested; no effect) — that
+    variable only disarms the ObjC ``+initialize`` check, a different trap.
+
+    Two layers, because each covers the other's hole:
+
+    * Rebind ``urllib.request.getproxies``/``proxy_bypass`` to their ``_environment``
+      variants, so the ``_scproxy`` code path is unreachable no matter what the
+      environment says. This survives tests that do ``patch.dict(os.environ, ...,
+      clear=True)`` — which is exactly how two redacted tests re-armed the crash after a
+      session-level ``no_proxy`` fix.
+    * Set ``no_proxy='*'`` when no proxy variable exists at all, so stdlib consumers that
+      captured references to the original functions before the fork still take the
+      environment path.
+
+    Child-only: the controller's proxy behaviour is untouched, and a worker is a
+    throwaway copy whose only job is running tests. A worker that must exercise real
+    macOS proxy discovery is a worker that cannot run under fork(); use
+    ``--parallel=process`` for that suite.
+    """
+    if sys.platform != "darwin":
+        return
+
+    import urllib.request
+
+    urllib.request.getproxies = urllib.request.getproxies_environment  # type: ignore[attr-defined]
+    urllib.request.proxy_bypass = urllib.request.proxy_bypass_environment  # type: ignore[attr-defined]
+
+    if not any(k.lower().endswith("_proxy") for k in os.environ):
+        os.environ["no_proxy"] = "*"
+
+
 def _warn_darwin_fork_caveat() -> None:
     """On macOS, warn up front about the Objective-C fork trap.
 
@@ -107,9 +146,11 @@ def _warn_darwin_fork_caveat() -> None:
     warnings.warn(
         "--parallel=fork on macOS: forked workers can be killed by the Objective-C "
         "runtime if any Apple framework was initialized before the fork (seen as "
-        "'Python quit unexpectedly' dialogs). If workers crash, export "
+        "'Python quit unexpectedly' dialogs). The fork-unsafe _scproxy/proxy-lookup "
+        "path is disarmed automatically in workers, but the ObjC +initialize trap "
+        "is not disarmable from inside a running process: if workers crash, export "
         "OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES before running pytest, or use "
-        "--parallel=process.",
+        "--parallel=process (the dependable mode on macOS).",
         stacklevel=2,
     )
 

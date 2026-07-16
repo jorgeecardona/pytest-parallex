@@ -92,17 +92,20 @@ def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     return any(is_worker_scoped(dep, item, _depth + 1) for dep in getattr(defs[-1], "argnames", ()))
 
 
-def session_fixture_names(session: pytest.Session) -> list[str]:
-    """Session-scoped fixtures that some collected test needs AND that are hoistable.
+def session_fixture_names(session: pytest.Session) -> tuple[list[str], list[str]]:
+    """Session-scoped fixtures some collected test needs: (hoistable, per-worker).
 
     Walks each item's fixture closure rather than the whole registry: a suite can define
     session fixtures that nothing in this run requests, and setting those up eagerly would
     boot resources the run never uses — the opposite of the point.
 
-    Fixtures downstream of ``worker_id`` are excluded and left to the workers; see
-    ``is_worker_scoped``.
+    Fixtures downstream of ``worker_id`` land in the second list and are left to the
+    workers (see ``is_worker_scoped``). They're returned rather than dropped so the
+    end-of-run summary can say "2 per-worker" — a fixture silently *not* hoisted looks
+    identical to a fixture hoisted, unless something reports the split.
     """
-    names: list[str] = []
+    hoistable: list[str] = []
+    per_worker: list[str] = []
     seen: set[str] = set()
 
     for item in session.items:
@@ -116,9 +119,16 @@ def session_fixture_names(session: pytest.Session) -> list[str]:
             defs = item.session._fixturemanager.getfixturedefs(name, item)
             if not defs:
                 continue
-            if defs[-1].scope == "session" and not is_worker_scoped(name, item):
-                names.append(name)
-    return names
+            if defs[-1].scope == "session":
+                if is_worker_scoped(name, item):
+                    # Don't count the marker fixtures themselves ('worker_id',
+                    # 'parallex_worker_id') — "per-worker" in the summary should mean the
+                    # user's fixtures, and the markers are trivially per-worker noise.
+                    if name not in WORKER_MARKERS:
+                        per_worker.append(name)
+                else:
+                    hoistable.append(name)
+    return hoistable, per_worker
 
 
 def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSetupResult:
@@ -149,6 +159,19 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
                 request.getfixturevalue(name)
             except Exception as exc:  # deliberately broad — re-raised in the worker, see docstring
                 failures.append((name, repr(exc)))
+                # pytest caches a fixture-body exception on the FixtureDef, and children
+                # inherit that cache — so without this, a failed hoist doesn't fall back
+                # to per-worker setup, it poisons every worker with the controller's
+                # exception. And execute() registers its post-finalizer *before* running
+                # the body, so the failed attempt also leaves an entry in _finalizers that
+                # trips pytest 9.1's `assert not self._finalizers` when the worker
+                # retries. Clearing both makes the docstring true: the worker that needs
+                # the fixture builds it fresh, and a genuinely broken fixture fails there,
+                # attributed to the test that wanted it.
+                defs = session._fixturemanager.getfixturedefs(name, item)
+                if defs:
+                    defs[-1].cached_result = None
+                    defs[-1]._finalizers.clear()
             else:
                 done.append(name)
 

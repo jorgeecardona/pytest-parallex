@@ -201,25 +201,52 @@ def pytest_parallex_auto_num_workers(config):
 - a module that owns a module- or class-scoped fixture runs on one worker (that's what
   keeps the fixture set up once for it). Modules using only function and session fixtures
   are split across workers freely.
-- fork is Linux-first. On Windows use `--parallel=process`. **On macOS it works with a
-  caveat**: since High Sierra the Objective-C runtime kills a forked child that touches an
-  Apple framework initialized before the fork — you see a "Python quit unexpectedly"
-  dialog per worker, and the real message (`objc[pid]: +[...] may have been in progress in
-  another thread when fork() was called ... Crashing instead`) only on stderr. Ordinary
-  imports arm it (urllib's proxy lookup, ssl/keychain). It's why multiprocessing defaults
-  to spawn on macOS since Python 3.8. Apple's escape hatch for the `+initialize` crash:
+- fork is Linux-first; on Windows use `--parallel=process`. **On macOS, forked children
+  can be killed by Apple frameworks** — you see a "Python quit unexpectedly" dialog per
+  worker and `no tests ran`. Two distinct traps, diagnosed on a real suite:
 
-  ```bash
-  export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES   # in your shell profile
-  ```
+  * **`_scproxy` segfault** (the one actually hit): urllib's proxy lookup calls the
+    SystemConfiguration framework, which is not fork-safe — botocore reaches it on every
+    client creation, so any AWS test can trigger it ([CPython #105912](https://github.com/python/cpython/issues/105912),
+    [bpo-31818](https://bugs.python.org/issue31818)). **The plugin disarms this one
+    automatically in workers** (proxy lookup is rebound to the environment-only path,
+    which survives even tests that wipe `os.environ`).
+  * **The ObjC `+initialize` trap**: the runtime crashes a forked child touching a
+    framework initialized pre-fork. Not disarmable from inside a running process;
+    `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` (in your shell profile, before
+    Python starts) is Apple's escape hatch. Note it does **not** fix the `_scproxy` trap —
+    on the suite that hit this, it had no effect.
 
-  It must be set before Python starts, so the plugin can't set it for you — it warns on
-  macOS when it's missing. It disarms only the `+initialize` check, not every
-  framework-after-fork hazard, so on macOS `--parallel=process` is the dependable choice
-  (confirmed working on a real suite); treat fork there as an experiment.
+  This is why multiprocessing defaults to spawn on macOS since Python 3.8. If workers
+  still die, `--parallel=process` is the dependable mode on macOS (530-test suite:
+  process 37.9s vs xdist 38.2s vs serial ~133s — you lose fork's shared session fixtures,
+  not the parallelism).
 - thread and async don't get around the GIL. They help suites that wait, not suites that
   compute.
 - Needs pytest 8.1 or newer. (8.0 changed the signature of an internal we rely on.)
+
+## Coverage
+
+Under fork, workers are forked children, and two things conspire to silently undercount:
+coverage restarts collection in a forked child only when told how, and the worker exits via
+`os._exit`, which skips the exit hook coverage saves from (the plugin saves explicitly for
+you). The working recipe — measured missing lines went from "everything workers ran" to
+zero:
+
+```toml
+# pyproject.toml
+[tool.coverage.run]
+patch = ["fork"]
+parallel = true
+```
+
+```bash
+COVERAGE_PROCESS_START=pyproject.toml pytest --parallel=fork --cov
+```
+
+The env var is coverage's own switch for measuring in child processes; without it,
+`patch = fork` silently does nothing and every line that ran only in a worker counts as
+unexecuted. If your CI gates on coverage, set it in the job env.
 
 ## Developing
 

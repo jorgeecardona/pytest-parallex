@@ -62,6 +62,10 @@ class ProcessRunner:
         nodeids = [item.nodeid for item in session.items]
         chunks = schedule_round_robin(nodeids, self.num_workers)
 
+        self.config._parallex_stats = {  # type: ignore[attr-defined]
+            "mode": "process",
+            "workers": len(chunks),
+        }
         rootdir = str(session.config.rootpath)
         base_args = _get_base_args(session.config)
         # -s means "don't capture" — so we don't. The output interleaves across workers,

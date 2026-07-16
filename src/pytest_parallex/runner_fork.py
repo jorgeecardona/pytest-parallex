@@ -39,6 +39,7 @@ from pytest_parallex._reports import (
 from pytest_parallex._safety import (
     ForkUnsafe,
     assert_forkable,
+    harden_darwin_fork_child,
     quiesce_known_threads,
     restart_quiesced,
 )
@@ -87,8 +88,9 @@ class ForkRunner:
         self.config._parallex_session = session  # type: ignore[attr-defined]
 
         eager = None
+        per_worker: list[str] = []
         if self.config.getoption("parallex_session_scope"):
-            names = session_fixture_names(session)
+            names, per_worker = session_fixture_names(session)
             if names:
                 eager = setup_session_fixtures(session, names)
                 if eager.names and os.environ.get("PARALLEX_TRACE"):
@@ -126,6 +128,19 @@ class ForkRunner:
         groups = plan_fork_claims(session.items)
         children = self._fork_children(groups, quiesced)
         restart_quiesced(quiesced)  # controller gets its logging back
+
+        # One line of ground truth for the terminal summary (see plugin.pytest_terminal_summary).
+        # "0 hoisted, N failed" is how a silently degraded run becomes visible — the
+        # filterwarnings=error bug shipped precisely because nothing reported this.
+        self.config._parallex_stats = {  # type: ignore[attr-defined]
+            "mode": "fork",
+            "workers": len(children),
+            "claims": len(groups),
+            "hoisted": len(eager.names) if eager else 0,
+            "hoist_failed": len(eager.failures) if eager else 0,
+            "per_worker": len(per_worker),
+        }
+
         failed = self._collect_reports(session, children)
 
         # Only the controller reaches here — children os._exit inside _fork_children — so
@@ -204,6 +219,10 @@ class ForkRunner:
         path: str,
     ) -> int:
         """Claim groups until the queue drains, then pickle this worker's reports."""
+        # First thing in the child, before any test can import boto/requests/urllib:
+        # on macOS, make the fork-unsafe _scproxy path unreachable. See _safety.
+        harden_darwin_fork_child()
+
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
         session: pytest.Session = self.config._parallex_session  # type: ignore[attr-defined]
 
@@ -268,6 +287,7 @@ class ForkRunner:
             _trace(f"{worker_id}: worker-scoped fixture {name!r} failed to tear down: {err}")
 
         write_reports(path, collector.collected)
+        _save_child_coverage()
         return 0
 
     def _collect_reports(self, session: pytest.Session, children: list[_Child]) -> int:
@@ -299,6 +319,33 @@ class ForkRunner:
                 )
                 failed += 1
         return failed
+
+
+def _save_child_coverage() -> None:
+    """Flush the child's coverage data before ``os._exit`` throws it away.
+
+    ``os._exit`` is deliberate (a child running the parent's atexit handlers would
+    double-run the world), but it also skips the exit hook coverage.py's ``patch = fork``
+    relies on to save the child's parallel data file. Measured before this: children wrote
+    NO data files at all, worker-executed lines counted as unexecuted, and a suite gated
+    at 70% coverage reported 39.8% under fork — which is what blocked wiring parallex into
+    a coverage-gated CI task. So the save that atexit would have done happens here,
+    explicitly, as the child's last act before exiting.
+
+    Best-effort by design: no coverage installed, or none active, means nothing to save.
+    """
+    try:
+        import coverage
+    except ImportError:
+        return
+    cov = coverage.Coverage.current()
+    if cov is None:
+        return
+    try:
+        cov.stop()
+        cov.save()
+    except Exception as exc:
+        _trace(f"could not save worker coverage: {exc!r}")
 
 
 def _trace(msg: str) -> None:

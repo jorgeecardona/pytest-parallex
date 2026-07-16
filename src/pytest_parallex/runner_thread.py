@@ -54,6 +54,10 @@ class ThreadRunner:
         session._setupstate = proxy  # type: ignore[assignment]
 
         chunks = schedule_round_robin(session.items, self.num_workers)
+        self.config._parallex_stats = {  # type: ignore[attr-defined]
+            "mode": "thread",
+            "workers": len(chunks),
+        }
 
         errors: list[BaseException] = []
         threads: list[threading.Thread] = []

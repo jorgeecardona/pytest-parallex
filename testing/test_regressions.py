@@ -573,3 +573,119 @@ class TestProcessArgForwarding:
         )
         result.stdout.fnmatch_lines(["*1 passed*"])
         assert result.ret == 0
+
+
+class TestTerminalSummaryLine:
+    """The one line that distinguishes 'parallelised' from 'silently did nothing'.
+
+    Both print the same 'N passed'. The runner that never ran (trap 1 in
+    docs/benchmarks.md) and the hoisting that silently degraded under
+    filterwarnings=error both shipped because nothing in the output told them apart.
+    """
+
+    def test_fork_reports_workers_hoisted_and_per_worker(self, pytester):
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture(scope="session")
+            def server():
+                return "srv"
+
+            @pytest.fixture(scope="session")
+            def db(worker_id, server):
+                return f"db-{worker_id}"
+            """
+        )
+        pytester.makepyfile(
+            test_one="def test_a(db): assert db",
+            test_two="def test_b(db): assert db",
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=2")
+        result.assert_outcomes(passed=2)
+        result.stdout.fnmatch_lines(
+            [
+                "pytest-parallex fork: 2 worker(s), 2 claim(s) | session fixtures: *hoisted, 1 per-worker*"
+            ]
+        )
+
+    def test_degraded_hoisting_is_visible(self, pytester):
+        """A hoist that fails must say so in the summary, not just pass quietly."""
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture(scope="session")
+            def fragile(request):
+                # The controller hoists before forking, so at hoist time no worker id is
+                # set; in a forked worker it is. Raise only pre-fork: the hoist fails,
+                # the worker that actually needs the fixture builds it fine.
+                if getattr(request.config, "_parallel_worker_id", None) is None:
+                    raise RuntimeError("cannot build pre-fork")
+                return 42
+            """
+        )
+        pytester.makepyfile("def test_a(fragile): assert fragile == 42")
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=1")
+        result.assert_outcomes(passed=1)
+        result.stdout.fnmatch_lines(["*1 FAILED to hoist*"])
+
+
+class TestCoverageUnderFork:
+    def test_worker_executed_lines_are_counted(self, pytester, monkeypatch):
+        """Coverage must include lines that only ran inside forked workers.
+
+        The trap has two halves, both hit on a real suite (redacted: a 70% gate tripped
+        at 39.8% under fork):
+
+        * coverage's ``patch = fork`` restarts collection in the child — but only if
+          ``COVERAGE_PROCESS_START`` names the config file; silently does nothing
+          otherwise.
+        * the restarted collector saves via atexit, and the worker exits via
+          ``os._exit``, which skips atexit. ``_save_child_coverage`` is the plugin's
+          explicit save — ablated: without it this suite measures 50%, with it 75%.
+        """
+        pytester.makefile(
+            ".toml",
+            pyproject="""
+            [tool.coverage.run]
+            patch = ["fork"]
+            parallel = true
+            source = ["src"]
+            """,
+        )
+        pkg = pytester.mkdir("src") / "mypkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "def ran_in_worker(x):\n    return x * 2\n", encoding="utf-8"
+        )
+        pytester.makepyfile(
+            test_one="""
+            import sys
+            sys.path.insert(0, "src")
+            from mypkg import ran_in_worker
+
+            def test_a():
+                assert ran_in_worker(2) == 4
+            """,
+            test_two="""
+            import sys
+            sys.path.insert(0, "src")
+            from mypkg import ran_in_worker
+
+            def test_b():
+                assert ran_in_worker(3) == 6
+            """,
+        )
+        monkeypatch.setenv("COVERAGE_PROCESS_START", "pyproject.toml")
+        result = pytester.runpytest_subprocess(
+            "--parallel=fork",
+            "--parallel-workers=2",
+            "--cov",
+            "--cov-report=term",
+            "-p",
+            "no:randomly",
+        )
+        result.assert_outcomes(passed=2)
+        # 100%: both statements (def + body) executed — the body only ever in workers.
+        result.stdout.fnmatch_lines(["*mypkg*100%*"])

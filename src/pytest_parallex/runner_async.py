@@ -69,6 +69,10 @@ class AsyncRunner:
         bounded by construction.
         """
         chunks = schedule_round_robin(session.items, self.num_workers)
+        self.config._parallex_stats = {  # type: ignore[attr-defined]
+            "mode": "async",
+            "workers": len(chunks),
+        }
         errors: list[BaseException] = []
 
         await asyncio.gather(
