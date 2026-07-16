@@ -8,15 +8,17 @@ import logging.handlers
 import os
 import sys
 import threading
-from collections.abc import Generator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 # --- Fork Safety ---
 
 
-class ForkUnsafe(Exception):
+class ForkUnsafe(Exception):  # noqa: N818 — reads as the state it reports
     """The process cannot be safely forked. The message names the offender."""
 
 
@@ -126,6 +128,148 @@ def harden_darwin_fork_child() -> None:
     urllib.request.proxy_bypass_macosx_sysconf = _no_proxy_bypass  # type: ignore[attr-defined]
     urllib.request.getproxies_macosx_sysconf = _no_proxies  # type: ignore[attr-defined]
 
+    install_forksafe_getaddrinfo()
+
+
+_original_getaddrinfo: Any = None
+
+_GETADDRINFO_HELPER = """\
+import json, socket, sys
+host, port, family, type_, proto, flags = json.loads(sys.argv[1])
+print(json.dumps(socket.getaddrinfo(host, port, family, type_, proto, flags)))
+"""
+
+
+def install_forksafe_getaddrinfo() -> None:
+    """Resolve real hostnames in a fresh subprocess; libinfo segfaults in a forked child.
+
+    The second darwin fork trap, distinct from ``_scproxy`` above and verified the same
+    way: forked workers died with SIGSEGV — wait status 11, zero results — inside
+    ``socket.getaddrinfo``, reached from httpx opening a connection to a cloud endpoint.
+    The minimal reproduction (macOS, Python 3.13) has nothing of that stack in it: fork
+    then ``getaddrinfo("example.com")`` in the child succeeds from a pristine parent and
+    segfaults every time once the parent has resolved any real hostname first — libinfo's
+    mDNSResponder client state does not survive the fork. And the parent has almost
+    always resolved one: pulling a container image, fetching a token, any warm-up request
+    arms it. ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` does not cover this one either
+    (tested; no effect).
+
+    A segfault cannot be caught, so "try and fall back" is not available — the resolution
+    has to happen where the state is sound. Numeric addresses stay on the real
+    ``getaddrinfo`` via an ``AI_NUMERICHOST`` first attempt: no lookup, no crashing path,
+    and it is the same work a poisoned child demonstrably still does (workers talk to
+    their 127.0.0.1 containers happily). Real names go to a short-lived ``python -I -c``
+    subprocess — a fresh exec gets pristine libinfo state — and the answer is cached per
+    (host, port, family, type, proto, flags), so each unique endpoint costs one spawn per
+    worker, ~50ms, once.
+
+    Patched at the leaf (``socket.getaddrinfo``) for the same reason as the proxy stubs
+    above: ``socket.create_connection``, asyncio, httpx and requests all resolve the name
+    in ``socket``'s module globals at call time, so replacing the module attribute
+    catches callers however early they imported. (A C extension holding the C symbol
+    would bypass it; none has been seen to.)
+    """
+    global _original_getaddrinfo
+    if _original_getaddrinfo is not None:
+        return
+
+    import json
+    import socket
+    import subprocess
+
+    original = socket.getaddrinfo
+    cache: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
+
+    def _enum_or_int(value: int, enum_type: Any) -> Any:
+        try:
+            return enum_type(value)
+        except ValueError:
+            return value
+
+    def forksafe_getaddrinfo(  # noqa: PLR0913 — the stdlib signature has six parameters
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,  # noqa: A002 — matches the stdlib signature
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[Any, ...]]:
+        try:
+            return original(host, port, family, type, proto, flags | socket.AI_NUMERICHOST)
+        except socket.gaierror:
+            pass  # a real name — resolve it out of process
+
+        if isinstance(host, bytes):
+            host = host.decode()
+        key = (host, port, family, type, proto, flags)
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+
+        request = json.dumps([host, port, family, type, proto, flags])
+        try:
+            helper = subprocess.run(  # noqa: S603 — fixed argv: our interpreter, our helper source
+                [sys.executable, "-I", "-c", _GETADDRINFO_HELPER, request],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise socket.gaierror(
+                socket.EAI_AGAIN, f"parallex fork-safe resolver timed out for {host!r}"
+            ) from None
+        if helper.returncode != 0:
+            stderr_tail = (
+                helper.stderr.strip().splitlines()[-1] if helper.stderr.strip() else "no stderr"
+            )
+            raise socket.gaierror(
+                socket.EAI_NONAME, f"parallex fork-safe resolver failed for {host!r}: {stderr_tail}"
+            )
+
+        results = [
+            (
+                _enum_or_int(af, socket.AddressFamily),
+                _enum_or_int(kind, socket.SocketKind),
+                proto_number,
+                canonname,
+                tuple(sockaddr),
+            )
+            for af, kind, proto_number, canonname, sockaddr in json.loads(helper.stdout)
+        ]
+        cache[key] = results
+        return results
+
+    _original_getaddrinfo = original
+    socket.getaddrinfo = forksafe_getaddrinfo
+
+
+def uninstall_forksafe_getaddrinfo() -> None:
+    """Put ``socket.getaddrinfo`` back.
+
+    Same reason as ``uninstall_fixture_thread_safety``: pytester runs sessions in this
+    interpreter, so a leaf patch left installed would leak into every later session.
+    """
+    global _original_getaddrinfo
+    if _original_getaddrinfo is None:
+        return
+    import socket
+
+    socket.getaddrinfo = _original_getaddrinfo
+    _original_getaddrinfo = None
+
+
+_DARWIN_FORK_CAVEAT = (
+    "--parallel=fork on macOS: forked workers can be killed by the Objective-C "
+    "runtime if any Apple framework was initialized before the fork (seen as "
+    "'Python quit unexpectedly' dialogs). The fork-unsafe _scproxy/proxy-lookup "
+    "and DNS-resolution (libinfo) paths are disarmed automatically in workers, "
+    "but the ObjC +initialize trap is not disarmable from inside a running "
+    "process: if workers crash, export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES "
+    "before running pytest, or use --parallel=process (the dependable mode on "
+    "macOS)."
+)
+
 
 def _warn_darwin_fork_caveat() -> None:
     """On macOS, warn up front about the Objective-C fork trap.
@@ -142,21 +286,21 @@ def _warn_darwin_fork_caveat() -> None:
     Apple's own escape hatch is ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` — but the ObjC
     runtime reads it at process start, so setting it here, mid-process, would do nothing.
     All we can do is say so before the crashes instead of after.
+
+    The caveat is operator advice, not a failure: under ``filterwarnings = error`` the
+    plain ``warnings.warn`` escalated into a UserWarning exception mid-
+    ``pytest_runtestloop`` — an INTERNALERROR that aborted the run before a single test
+    had forked (hit on a real macOS suite with strict warnings). Escalation is caught and
+    the advice delivered on stderr instead; an ``ignore`` filter still silences it.
     """
     if sys.platform != "darwin" or os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY"):
         return
     import warnings
 
-    warnings.warn(
-        "--parallel=fork on macOS: forked workers can be killed by the Objective-C "
-        "runtime if any Apple framework was initialized before the fork (seen as "
-        "'Python quit unexpectedly' dialogs). The fork-unsafe _scproxy/proxy-lookup "
-        "path is disarmed automatically in workers, but the ObjC +initialize trap "
-        "is not disarmable from inside a running process: if workers crash, export "
-        "OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES before running pytest, or use "
-        "--parallel=process (the dependable mode on macOS).",
-        stacklevel=2,
-    )
+    try:
+        warnings.warn(_DARWIN_FORK_CAVEAT, stacklevel=2)
+    except UserWarning:
+        sys.stderr.write(_DARWIN_FORK_CAVEAT + "\n")
 
 
 # --- Thread-Local SetupState Proxy ---
@@ -316,9 +460,10 @@ def install_fixture_thread_safety() -> None:
 
     from _pytest.fixtures import FixtureDef
 
-    _original_execute = FixtureDef.execute
+    fixturedef_cls: type[FixtureDef[Any]] = FixtureDef
+    _original_execute = fixturedef_cls.execute
 
-    def locked_execute(self, request):  # type: ignore[no-untyped-def]
+    def locked_execute(self: Any, request: pytest.FixtureRequest) -> Any:
         if self.scope == "function":
             return _original_execute(self, request)
         with _get_fixture_lock(id(self)):
@@ -357,7 +502,7 @@ def _install_tolerant_current_test_var() -> None:
 
     _original_current_test_var = runner._update_current_test_var
 
-    def tolerant(item, when):  # type: ignore[no-untyped-def]
+    def tolerant(item: pytest.Item, when: str | None) -> None:
         if when is None:
             os.environ.pop("PYTEST_CURRENT_TEST", None)  # was pop(name) — raised on a race
         else:
@@ -417,7 +562,7 @@ class ThreadSafeReporter:
     _lock = threading.Lock()
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> Generator[None, Any, Any]:
+    def pytest_runtest_logreport(self) -> Generator[None, Any, Any]:
         with self._lock:
             return (yield)
 

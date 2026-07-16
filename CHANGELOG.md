@@ -74,3 +74,17 @@ Driven by the first real-world macOS run and a coverage-gated CI adoption.
   original functions resolve at call time — catches every caller regardless of when they
   imported or what the environment says. Verified: 0 dead workers, 530/530 claims, and
   fork became the fastest configuration on that machine (30.0s vs xdist 38.2s).
+
+## 0.1.13
+
+- **macOS: the second fork segfault — DNS resolution — is disarmed in workers.** Distinct
+  from `_scproxy` and found on the same real suite once that guard held: workers died in
+  `socket.getaddrinfo` reached from httpx opening a cloud endpoint. Minimal reproduction:
+  a child forked from a parent that has ever resolved a real hostname segfaults on its own
+  first lookup (libinfo's mDNSResponder client state does not survive the fork), and the
+  parent has almost always resolved one — pulling a container image is enough.
+  `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` does not cover it. A segfault cannot be caught, so
+  workers now resolve real names in a short-lived `python -I -c` subprocess (fresh exec,
+  pristine libinfo) with a per-endpoint cache; numeric addresses and everything a poisoned
+  child could already do stay on the real `getaddrinfo` via an `AI_NUMERICHOST` first
+  attempt. Verified on the suite that found it: 0 dead workers, 187/187 accounted for.
