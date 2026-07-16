@@ -75,6 +75,16 @@ def pytest_configure(config: pytest.Config) -> None:
         # Late, so our worker_id beats xdist's — see WorkerIdFixtures. Never for a plain
         # xdist run, which must keep xdist's.
         config.pluginmanager.register(WorkerIdFixtures(), "parallex-worker-id")
+    elif not config.pluginmanager.hasplugin("xdist"):
+        # Serial run, xdist not installed: provide worker_id anyway, returning 'main'.
+        # The archetype `def database_url(worker_id, server)` only works if it resolves in
+        # EVERY way the suite is run — a conftest can't request a fixture that exists only
+        # under --parallel, so without this, adopting the pattern broke plain `pytest`
+        # (found immediately on the first real adopter: accounting has no xdist, and its
+        # serial run died with "fixture 'worker_id' not found"). When xdist IS installed
+        # and idle we stay out of the way: its own fixture answers 'master', and suites
+        # written against it may compare on exactly that string.
+        config.pluginmanager.register(WorkerIdFixtures(), "parallex-worker-id")
 
     if mode is None:
         return

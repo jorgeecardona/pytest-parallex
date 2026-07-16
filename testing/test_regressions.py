@@ -104,6 +104,41 @@ class TestFixtureCaching:
         assert result.ret != 0
 
 
+class TestWorkerIdOnSerialRuns:
+    """`worker_id` must resolve however the suite is run, or the archetype is unusable.
+
+    A conftest can't request a fixture that only exists under --parallel: the first real
+    adopter (a suite with no xdist installed) died on plain `pytest` with "fixture
+    'worker_id' not found" the moment `database_url(worker_id, server)` was added. So:
+    no xdist and no --parallel → ours answers 'main'; xdist installed and idle → xdist's
+    own answers (suites written against it may compare on 'master' exactly).
+    """
+
+    def test_serial_without_xdist_resolves_to_main(self, pytester):
+        pytester.makepyfile(
+            """
+            def test_wid(worker_id):
+                with open("wid", "w") as fh:
+                    fh.write(worker_id)
+            """
+        )
+        result = pytester.runpytest("-p", "no:xdist")
+        result.assert_outcomes(passed=1)
+        assert (pytester.path / "wid").read_text() == "main"
+
+    def test_serial_with_xdist_keeps_xdists(self, pytester):
+        pytester.makepyfile(
+            """
+            def test_wid(worker_id):
+                with open("wid", "w") as fh:
+                    fh.write(worker_id)
+            """
+        )
+        result = pytester.runpytest()  # xdist installed (dev dep), idle
+        result.assert_outcomes(passed=1)
+        assert (pytester.path / "wid").read_text() == "master"
+
+
 class TestForkFillsWorkers:
     """A big module of function-fixture tests must use more than one worker.
 
