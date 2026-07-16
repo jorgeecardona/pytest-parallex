@@ -635,7 +635,7 @@ class TestCoverageUnderFork:
     def test_worker_executed_lines_are_counted(self, pytester, monkeypatch):
         """Coverage must include lines that only ran inside forked workers.
 
-        The trap has two halves, both hit on a real suite (redacted: a 70% gate tripped
+        The trap has two halves, both hit on a real suite (a 70% coverage gate tripped
         at 39.8% under fork):
 
         * coverage's ``patch = fork`` restarts collection in the child — but only if

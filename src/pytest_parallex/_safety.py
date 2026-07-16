@@ -87,7 +87,7 @@ def assert_forkable() -> None:
 def harden_darwin_fork_child() -> None:
     """Disarm macOS's ``_scproxy`` segfault inside a forked worker. No-op elsewhere.
 
-    Verified root cause from a real Mac (redacted suite): forked workers died with
+    Verified root cause from a real macOS suite: forked workers died with
     SIGSEGV — wait status 11, zero results — inside CPython's
     ``urllib.request.proxy_bypass_macosx_sysconf``, reached from botocore's proxy
     detection during client creation. That path calls the SystemConfiguration framework
