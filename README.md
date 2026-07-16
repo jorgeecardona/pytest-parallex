@@ -94,7 +94,7 @@ gets a database on it. The wall clock barely moves; the resource bill does.
 **You write the fixture the obvious way.** No `FileLock`, no shared tmpdir, no "am I worker
 gw0" branch. The fixture that says it runs once runs once.
 
-[docs/benchmarks.md](docs/benchmarks.md) has the method, and the measurements that looked
+[docs/benchmarks.md](https://gitlab.com/jorgeecardona/pytest-parallex/-/blob/main/docs/benchmarks.md) has the method, and the measurements that looked
 convincing and were wrong before the numbers above were re-taken.
 
 ## Fork safety

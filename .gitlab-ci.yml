@@ -62,3 +62,19 @@ ci:
       else
         moon run :ci -c 1
       fi
+
+# Publish the docs to GitLab Pages. A job named `pages` whose artifact is public/ is what
+# GitLab serves. Builds the same mkdocs site as the `docs` task (strict), but into public/.
+# main only; independent of `ci` (docs aren't gated on tests). Uses the uv image directly —
+# no proto/moon needed here. (Same pattern as musil.)
+pages:
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  needs: []
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - uv sync --frozen --extra docs
+    - uv run mkdocs build --strict --site-dir public
+  artifacts:
+    paths:
+      - public

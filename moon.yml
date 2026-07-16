@@ -39,6 +39,11 @@ tasks:
     command: 'uv run --isolated --python 3.10 --with-editable . --with pytest==8.1.0 --with pytest-xdist --with pytest-asyncio pytest -q'
     inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
 
+  docs:
+    command: 'uv run --extra docs mkdocs build --strict'
+    inputs: ['docs/**/*', 'mkdocs.yml', 'README.md', 'CHANGELOG.md']
+    outputs: ['site']
+
   build:
     command: 'uv build --out-dir dist'
     deps: ['~:test']
@@ -67,6 +72,7 @@ tasks:
       - '~:test'
       - '~:test-pytest-floor'
       - '~:build'
+      - '~:docs'
       - '~:version-guard'
 
   # Mint a PyPI OIDC token and upload dist/*. Invoked by release (or by hand).

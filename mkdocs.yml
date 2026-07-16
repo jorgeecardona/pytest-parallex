@@ -1,0 +1,49 @@
+site_name: pytest-parallex
+site_description: Parallel pytest where session fixtures run once for the whole run, not once per worker.
+site_url: https://jorgeecardona.gitlab.io/pytest-parallex/
+repo_url: https://gitlab.com/jorgeecardona/pytest-parallex
+repo_name: jorgeecardona/pytest-parallex
+copyright: MIT &copy; Jorge Cardona
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: [".", "docs"]
+      check_paths: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Benchmarks (and the traps): benchmarks.md
+  - Fork-safety notes: fork-safety-references.md
+  - Changelog: changelog.md
