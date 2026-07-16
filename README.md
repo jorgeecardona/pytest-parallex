@@ -49,10 +49,10 @@ pytest --parallel=fork --parallel-workers=8
 
 | mode | isolation | `scope="session"` runs | use when |
 |---|---|---|---|
-| `fork` | process per worker, warm | once, in the controller | Linux/macOS, and the process is quiet at fork time |
+| `fork` | process per worker, warm | once, in the controller | Linux (macOS: see the caveat below), process quiet at fork time |
 | `thread` | shared address space | once | tests are I/O-bound and don't mind sharing globals |
 | `async` | shared address space | once | same as `thread`, driven from an event loop |
-| `process` | fresh interpreter per worker | once per worker | tests mutate process-global state, or you're on Windows |
+| `process` | fresh interpreter per worker | once per worker | tests mutate process-global state, Windows, or macOS |
 
 `--parallel-workers` defaults to `auto` (CPU count).
 
@@ -201,7 +201,22 @@ def pytest_parallex_auto_num_workers(config):
 - a module that owns a module- or class-scoped fixture runs on one worker (that's what
   keeps the fixture set up once for it). Modules using only function and session fixtures
   are split across workers freely.
-- fork is Linux and macOS only. On Windows use `--parallel=process`.
+- fork is Linux-first. On Windows use `--parallel=process`. **On macOS it works with a
+  caveat**: since High Sierra the Objective-C runtime kills a forked child that touches an
+  Apple framework initialized before the fork — you see a "Python quit unexpectedly"
+  dialog per worker, and the real message (`objc[pid]: +[...] may have been in progress in
+  another thread when fork() was called ... Crashing instead`) only on stderr. Ordinary
+  imports arm it (urllib's proxy lookup, ssl/keychain). It's why multiprocessing defaults
+  to spawn on macOS since Python 3.8. Apple's escape hatch for the `+initialize` crash:
+
+  ```bash
+  export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES   # in your shell profile
+  ```
+
+  It must be set before Python starts, so the plugin can't set it for you — it warns on
+  macOS when it's missing. It disarms only the `+initialize` check, not every
+  framework-after-fork hazard, so on macOS `--parallel=process` is the dependable choice
+  (confirmed working on a real suite); treat fork there as an experiment.
 - thread and async don't get around the GIL. They help suites that wait, not suites that
   compute.
 - Needs pytest 8.1 or newer. (8.0 changed the signature of an internal we rely on.)

@@ -70,3 +70,48 @@ class TestOptions:
         result = pytester.runpytest("--parallel=thread", "--collect-only")
         result.stdout.fnmatch_lines(["*test_a*"])
         assert result.ret == 0
+
+
+class TestDarwinForkCaveat:
+    """The macOS ObjC fork trap warning — testable anywhere by faking the platform.
+
+    The real failure was found by Jorge on an actual Mac: a "Python quit unexpectedly"
+    dialog per worker and nothing in the summary, because the ObjC runtime kills forked
+    children that touch a pre-fork-initialized Apple framework. The plugin can't fix it
+    (OBJC_DISABLE_INITIALIZE_FORK_SAFETY must be set before Python starts), so the one
+    thing it owes the user is a warning BEFORE the crashes that names the fix.
+    """
+
+    def test_warns_on_darwin_without_escape_hatch(self, monkeypatch):
+        import warnings
+
+        from pytest_parallex import _safety
+
+        monkeypatch.setattr(_safety.sys, "platform", "darwin")
+        monkeypatch.delenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", raising=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _safety._warn_darwin_fork_caveat()
+        assert any("OBJC_DISABLE_INITIALIZE_FORK_SAFETY" in str(w.message) for w in caught)
+
+    def test_silent_when_escape_hatch_is_set(self, monkeypatch):
+        import warnings
+
+        from pytest_parallex import _safety
+
+        monkeypatch.setattr(_safety.sys, "platform", "darwin")
+        monkeypatch.setenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _safety._warn_darwin_fork_caveat()
+        assert not caught
+
+    def test_silent_on_linux(self):
+        import warnings
+
+        from pytest_parallex import _safety
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _safety._warn_darwin_fork_caveat()
+        assert not caught

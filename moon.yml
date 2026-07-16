@@ -31,8 +31,12 @@ tasks:
   # and a Node after (fork mode dies on 8.0), and 9.1 added an assertion to
   # FixtureDef.execute that turned a silent thread race into a crash. Both were found this
   # way, and neither was visible to a single-version run. ~10s.
+  # Also pins python 3.10 — BOTH floors from pyproject in one worst-case corner. Added
+  # after the python floor turned out to be a claim nobody had run: the suite only ever
+  # executed on 3.12/3.13 while requires-python said >=3.10. (It passed when finally run —
+  # unlike the pytest floor, which was fiction — but now it's enforced, not asserted.)
   test-pytest-floor:
-    command: 'uv run --isolated --with pytest==8.1.0 pytest -q'
+    command: 'uv run --isolated --python 3.10 --with-editable . --with pytest==8.1.0 --with pytest-xdist --with pytest-asyncio pytest -q'
     inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
 
   build:

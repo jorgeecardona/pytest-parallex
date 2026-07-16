@@ -81,6 +81,38 @@ def assert_forkable() -> None:
     if sys.platform == "win32" or not hasattr(os, "fork"):
         raise ForkUnsafe(f"os.fork() is not available on {sys.platform}")
 
+    _warn_darwin_fork_caveat()
+
+
+def _warn_darwin_fork_caveat() -> None:
+    """On macOS, warn up front about the Objective-C fork trap.
+
+    Since High Sierra, the ObjC runtime deliberately crashes a forked child the moment it
+    touches an Apple framework whose ``+initialize`` had run in the parent —
+    ``objc[pid]: +[...] may have been in progress in another thread when fork() was
+    called ... Crashing instead.`` To the user that is a wall of "Python quit
+    unexpectedly" dialogs, one per worker, with the real message only on stderr. It is
+    armed by ordinary imports: urllib's proxy lookup (SystemConfiguration), ssl/keychain,
+    anything CoreFoundation. This is why multiprocessing defaults to spawn on macOS since
+    Python 3.8.
+
+    Apple's own escape hatch is ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` — but the ObjC
+    runtime reads it at process start, so setting it here, mid-process, would do nothing.
+    All we can do is say so before the crashes instead of after.
+    """
+    if sys.platform != "darwin" or os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY"):
+        return
+    import warnings
+
+    warnings.warn(
+        "--parallel=fork on macOS: forked workers can be killed by the Objective-C "
+        "runtime if any Apple framework was initialized before the fork (seen as "
+        "'Python quit unexpectedly' dialogs). If workers crash, export "
+        "OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES before running pytest, or use "
+        "--parallel=process.",
+        stacklevel=2,
+    )
+
 
 # --- Thread-Local SetupState Proxy ---
 
