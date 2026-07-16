@@ -10,6 +10,7 @@ against each other, because four runners that disagree cannot all be right.
 
 from __future__ import annotations
 
+import sys
 import textwrap
 
 import pytest
@@ -34,7 +35,9 @@ ALL_MODES = ["thread", "process", "async", "fork"]
 
 class TestFixtureCaching:
     @pytest.mark.parametrize("mode", SHARED_SESSION_MODES)
-    def test_session_fixture_body_runs_exactly_once(self, pytester, mode):
+    def test_session_fixture_body_runs_exactly_once(
+        self, pytester: pytest.Pytester, mode: str
+    ) -> None:
         """A cached non-function-scoped fixture must not be rebuilt, or crash the run.
 
         ``ThreadFixtureLocking`` used to short-circuit a cache hit by returning from a
@@ -80,7 +83,9 @@ class TestFixtureCaching:
         assert body_runs == 1, f"session fixture body ran {body_runs}x, expected once"
 
     @pytest.mark.parametrize("mode", SHARED_SESSION_MODES)
-    def test_failing_session_fixture_reports_to_every_waiter(self, pytester, mode):
+    def test_failing_session_fixture_reports_to_every_waiter(
+        self, pytester: pytest.Pytester, mode: str
+    ) -> None:
         """A fixture that raises must raise for the threads that waited on it too.
 
         The cache entry holds an exception rather than a value; a short-circuit that
@@ -114,7 +119,7 @@ class TestWorkerIdOnSerialRuns:
     own answers (suites written against it may compare on 'master' exactly).
     """
 
-    def test_serial_without_xdist_resolves_to_main(self, pytester):
+    def test_serial_without_xdist_resolves_to_main(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             def test_wid(worker_id):
@@ -126,7 +131,7 @@ class TestWorkerIdOnSerialRuns:
         result.assert_outcomes(passed=1)
         assert (pytester.path / "wid").read_text() == "main"
 
-    def test_serial_with_xdist_keeps_xdists(self, pytester):
+    def test_serial_with_xdist_keeps_xdists(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             def test_wid(worker_id):
@@ -152,7 +157,7 @@ class TestForkFillsWorkers:
     the summary — a serial run and a fully-spread run both print the same "N passed".
     """
 
-    def test_a_pure_function_module_spreads_across_workers(self, pytester):
+    def test_a_pure_function_module_spreads_across_workers(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             import pytest
@@ -175,7 +180,7 @@ class TestForkFillsWorkers:
             f"16 tests in one module ran on {workers} — fork used a single worker, i.e. serial"
         )
 
-    def test_a_module_fixture_module_is_not_split(self, pytester):
+    def test_a_module_fixture_module_is_not_split(self, pytester: pytest.Pytester) -> None:
         """The other half: a module with a module fixture stays on one worker, built once."""
         pytester.makepyfile(
             """
@@ -217,7 +222,9 @@ class TestFunctionFixtureIsolation:
     """
 
     @pytest.mark.parametrize("mode", ["thread", "async"])
-    def test_each_test_gets_its_own_function_fixture(self, pytester, mode):
+    def test_each_test_gets_its_own_function_fixture(
+        self, pytester: pytest.Pytester, mode: str
+    ) -> None:
         pytester.makepyfile(
             """
             import time
@@ -251,7 +258,9 @@ class TestFunctionFixtureIsolation:
 
 class TestTeardownOrdering:
     @pytest.mark.parametrize("mode", ALL_MODES)
-    def test_workers_do_not_tear_down_each_others_scopes(self, pytester, mode):
+    def test_workers_do_not_tear_down_each_others_scopes(
+        self, pytester: pytest.Pytester, mode: str
+    ) -> None:
         """A worker's teardown must not reach into a scope another worker is inside.
 
         pytest decides what to tear down after an item by comparing it to ``nextitem``.
@@ -274,7 +283,7 @@ class TestTeardownOrdering:
                 return "s"
             """
         )
-        files = {}
+        files: dict[str, str] = {}
         for name in ("alpha", "beta", "gamma", "delta"):
             files[f"test_{name}"] = _suite(
                 f"""
@@ -299,7 +308,7 @@ class TestTeardownOrdering:
 
 class TestReportingAgreement:
     @pytest.mark.parametrize("mode", ALL_MODES)
-    def test_outcomes_match_serial(self, pytester, mode):
+    def test_outcomes_match_serial(self, pytester: pytest.Pytester, mode: str) -> None:
         """Every mode must report what a serial run reports.
 
         xfail is the load-bearing case: an expected failure arrives as
@@ -334,7 +343,9 @@ class TestReportingAgreement:
 
 class TestFailureCounting:
     @pytest.mark.parametrize("mode", ALL_MODES)
-    def test_testsfailed_matches_the_number_of_failing_tests(self, pytester, mode):
+    def test_testsfailed_matches_the_number_of_failing_tests(
+        self, pytester: pytest.Pytester, mode: str
+    ) -> None:
         """``session.testsfailed`` must equal the failures, not a multiple of them.
 
         Replaying a report through ``pytest_runtest_logreport`` already increments
@@ -375,7 +386,7 @@ class TestFailureCounting:
 
 class TestWorkerIdentity:
     @pytest.mark.parametrize("mode", ALL_MODES)
-    def test_worker_id_is_ours_not_xdists(self, pytester, mode):
+    def test_worker_id_is_ours_not_xdists(self, pytester: pytest.Pytester, mode: str) -> None:
         """``parallex_worker_id`` must report a parallex worker.
 
         pytest-xdist ships a ``worker_id`` fixture, and a suite that parallelises is
@@ -403,7 +414,9 @@ class TestWorkerIdentity:
 
 
 class TestWorkerScopedFixtures:
-    def test_server_is_hoisted_but_per_worker_database_is_not(self, pytester):
+    def test_server_is_hoisted_but_per_worker_database_is_not(
+        self, pytester: pytest.Pytester
+    ) -> None:
         """The split the whole feature exists to make possible.
 
         One server in the controller, one database per worker on it — what xdist's
@@ -463,7 +476,7 @@ class TestWorkerScopedFixtures:
 
 
 class TestHoistingUnderStrictWarnings:
-    def test_hoisting_survives_filterwarnings_error(self, pytester):
+    def test_hoisting_survives_filterwarnings_error(self, pytester: pytest.Pytester) -> None:
         """Hoisting must still work for a suite that turns warnings into errors.
 
         The controller hoists by borrowing ``session.items[0]``'s request and calling
@@ -517,8 +530,68 @@ class TestHoistingUnderStrictWarnings:
         )
 
 
+class TestDarwinForkEndToEnd:
+    """A full fork run through the darwin branch, on any host.
+
+    CI runs Linux only, so the darwin code in ``assert_forkable`` and the child-side
+    hardening are never traversed by the other end-to-end tests there. Faking
+    ``sys.platform`` around an in-process run keeps the whole seam — caveat emission
+    mid-runtestloop, ``harden_darwin_fork_child`` in the forked children — under
+    automatic regression coverage. The real segfaults can't reproduce off a Mac, but
+    every line of our handling of them can.
+    """
+
+    def test_strict_warnings_run_survives_darwin_caveat(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact regression a real Mac hit: fork + filterwarnings=error INTERNALERRORed.
+
+        The caveat's plain ``warnings.warn`` escalated inside ``pytest_runtestloop`` and
+        aborted the run before a single test forked. On Linux this test is the only thing
+        standing between that bug and a release.
+        """
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", raising=False)
+        pytester.makeini("[pytest]\nfilterwarnings =\n    error\n")
+        pytester.makepyfile(test_ok="def test_ok(): assert True")
+
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=1")
+
+        result.assert_outcomes(passed=1)
+        assert "INTERNALERROR" not in str(result.stdout)
+        assert "OBJC_DISABLE_INITIALIZE_FORK_SAFETY" in str(result.stderr)
+
+    def test_children_are_hardened(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Forked workers must run with the proxy stubs and forksafe resolver installed.
+
+        The inner test can only pass if ``harden_darwin_fork_child`` ran in the child: on
+        a Linux host urllib has no ``proxy_bypass_macosx_sysconf`` at all unless the guard
+        installed its stub. The patches die with the forked child, so nothing leaks.
+        """
+        monkeypatch.setattr(sys, "platform", "darwin")
+        pytester.makepyfile(
+            test_hardened="""
+            import socket
+            import urllib.request
+
+            def test_scproxy_stub_installed():
+                assert urllib.request.proxy_bypass_macosx_sysconf("anything") is False
+
+            def test_forksafe_resolver_installed():
+                assert socket.getaddrinfo.__module__ == "pytest_parallex._safety"
+            """
+        )
+
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=1")
+        result.assert_outcomes(passed=2)
+
+
 class TestForkOutput:
-    def test_controller_output_is_not_duplicated_into_children(self, pytester):
+    def test_controller_output_is_not_duplicated_into_children(
+        self, pytester: pytest.Pytester
+    ) -> None:
         """Output written before the fork must appear once, not once per child.
 
         fork() copies the process, and with it any *unflushed* stdio buffer — so the
@@ -548,7 +621,7 @@ class TestForkOutput:
 
 
 class TestProcessArgForwarding:
-    def test_user_args_reach_the_worker(self, pytester):
+    def test_user_args_reach_the_worker(self, pytester: pytest.Pytester) -> None:
         """The worker must run with the flags the user actually passed.
 
         ``-x`` is the visible probe: forwarded, the worker stops at its first failure and
@@ -565,7 +638,7 @@ class TestProcessArgForwarding:
         result = pytester.runpytest("--parallel=process", "--parallel-workers=1", "-x")
         result.assert_outcomes(failed=1)
 
-    def test_parallel_flags_are_not_forwarded(self, pytester):
+    def test_parallel_flags_are_not_forwarded(self, pytester: pytest.Pytester) -> None:
         """A worker must not re-read --parallel, or it fans out again, recursively."""
         pytester.makepyfile("def test_a(): assert True")
         result = pytester.runpytest(
@@ -583,7 +656,7 @@ class TestTerminalSummaryLine:
     filterwarnings=error both shipped because nothing in the output told them apart.
     """
 
-    def test_fork_reports_workers_hoisted_and_per_worker(self, pytester):
+    def test_fork_reports_workers_hoisted_and_per_worker(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
             """
             import pytest
@@ -609,7 +682,7 @@ class TestTerminalSummaryLine:
             ]
         )
 
-    def test_degraded_hoisting_is_visible(self, pytester):
+    def test_degraded_hoisting_is_visible(self, pytester: pytest.Pytester) -> None:
         """A hoist that fails must say so in the summary, not just pass quietly."""
         pytester.makeconftest(
             """
@@ -632,7 +705,9 @@ class TestTerminalSummaryLine:
 
 
 class TestCoverageUnderFork:
-    def test_worker_executed_lines_are_counted(self, pytester, monkeypatch):
+    def test_worker_executed_lines_are_counted(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Coverage must include lines that only ran inside forked workers.
 
         The trap has two halves, both hit on a real suite (a 70% coverage gate tripped

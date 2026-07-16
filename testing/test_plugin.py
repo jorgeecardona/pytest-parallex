@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 
-def test_dunder_version_matches_the_package_metadata():
+def test_dunder_version_matches_the_package_metadata() -> None:
     """``pytest_parallex.__version__`` must equal the installed version.
 
     The literal in __init__.py exists for humans (`pytest_parallex.__version__` at a
@@ -21,13 +21,13 @@ def test_dunder_version_matches_the_package_metadata():
 
 
 class TestOptions:
-    def test_parallel_option_recognized(self, pytester):
+    def test_parallel_option_recognized(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=thread", "--parallel-workers=1")
         assert result.ret == 0
 
     @pytest.mark.parametrize("bad", ["abc", "0", "-1", "2.5"])
-    def test_bad_worker_count_is_a_usage_error(self, pytester, bad):
+    def test_bad_worker_count_is_a_usage_error(self, pytester: pytest.Pytester, bad: str) -> None:
         """A typo in a flag must produce a usage error, not a traceback.
 
         Anything other than a UsageError raised from pytest_configure surfaces as an
@@ -40,32 +40,32 @@ class TestOptions:
         result.stderr.fnmatch_lines(["*--parallel-workers must be*"])
         assert "INTERNALERROR" not in result.stdout.str()
 
-    def test_parallel_process_option(self, pytester):
+    def test_parallel_process_option(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=process", "--parallel-workers=1")
         assert result.ret == 0
 
-    def test_parallel_async_option(self, pytester):
+    def test_parallel_async_option(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=async", "--parallel-workers=1")
         assert result.ret == 0
 
-    def test_invalid_mode_fails(self, pytester):
+    def test_invalid_mode_fails(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=invalid")
         assert result.ret != 0
 
-    def test_no_parallel_runs_normally(self, pytester):
+    def test_no_parallel_runs_normally(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): assert True")
         result = pytester.runpytest()
         result.stdout.fnmatch_lines(["*1 passed*"])
 
-    def test_workers_must_be_positive(self, pytester):
+    def test_workers_must_be_positive(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=thread", "--parallel-workers=0")
         assert result.ret != 0
 
-    def test_collectonly_skips_runner(self, pytester):
+    def test_collectonly_skips_runner(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): pass")
         result = pytester.runpytest("--parallel=thread", "--collect-only")
         result.stdout.fnmatch_lines(["*test_a*"])
@@ -82,7 +82,7 @@ class TestDarwinForkCaveat:
     thing it owes the user is a warning BEFORE the crashes that names the fix.
     """
 
-    def test_warns_on_darwin_without_escape_hatch(self, monkeypatch):
+    def test_warns_on_darwin_without_escape_hatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import warnings
 
         from pytest_parallex import _safety
@@ -94,7 +94,7 @@ class TestDarwinForkCaveat:
             _safety._warn_darwin_fork_caveat()
         assert any("OBJC_DISABLE_INITIALIZE_FORK_SAFETY" in str(w.message) for w in caught)
 
-    def test_silent_when_escape_hatch_is_set(self, monkeypatch):
+    def test_silent_when_escape_hatch_is_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import warnings
 
         from pytest_parallex import _safety
@@ -106,15 +106,36 @@ class TestDarwinForkCaveat:
             _safety._warn_darwin_fork_caveat()
         assert not caught
 
-    def test_silent_on_linux(self):
+    def test_silent_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import warnings
 
         from pytest_parallex import _safety
 
+        monkeypatch.setattr(_safety.sys, "platform", "linux")
+        monkeypatch.delenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", raising=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             _safety._warn_darwin_fork_caveat()
         assert not caught
+
+    def test_never_escalates_under_error_filters(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`filterwarnings = error` must not turn the caveat into an INTERNALERROR.
+
+        The escalated warning surfaced mid-pytest_runtestloop and aborted the whole run
+        on a real macOS suite with strict warnings; the advice belongs on stderr instead.
+        """
+        import warnings
+
+        from pytest_parallex import _safety
+
+        monkeypatch.setattr(_safety.sys, "platform", "darwin")
+        monkeypatch.delenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", raising=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _safety._warn_darwin_fork_caveat()
+        assert "OBJC_DISABLE_INITIALIZE_FORK_SAFETY" in capsys.readouterr().err
 
 
 class TestDarwinScproxyGuard:
@@ -128,32 +149,49 @@ class TestDarwinScproxyGuard:
     proxy_bypass resolves them in urllib.request's globals at call time — verified on the
     Mac: 0 dead workers, 530/530 claims.
 
-    On Linux the darwin-only leaves don't exist to exercise end-to-end; these tests pin
-    what is verifiable here: the stubs are installed on (faked) darwin, behave, and nothing
-    is touched elsewhere.
+    These tests fake the platform both ways, so they pin the same behavior on any host:
+    the stubs are installed on (faked) darwin, behave, and a non-darwin platform is left
+    untouched. urllib is restored exactly afterwards — a linux host never had the leaves,
+    a darwin host keeps its real ones.
     """
 
-    def test_installs_leaf_stubs_on_darwin(self, monkeypatch):
+    _LEAF_NAMES = ("proxy_bypass_macosx_sysconf", "getproxies_macosx_sysconf")
+    _MISSING = object()
+
+    def _snapshot_leaves(self) -> dict[str, object]:
+        import urllib.request
+
+        return {name: getattr(urllib.request, name, self._MISSING) for name in self._LEAF_NAMES}
+
+    def _restore_leaves(self, snapshot: dict[str, object]) -> None:
+        import urllib.request
+
+        for name, original in snapshot.items():
+            if original is self._MISSING:
+                if hasattr(urllib.request, name):
+                    delattr(urllib.request, name)
+            else:
+                setattr(urllib.request, name, original)
+
+    def test_installs_leaf_stubs_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import urllib.request
 
         from pytest_parallex import _safety
 
         monkeypatch.setattr(_safety.sys, "platform", "darwin")
+        snapshot = self._snapshot_leaves()
         _safety.harden_darwin_fork_child()
         try:
             assert urllib.request.proxy_bypass_macosx_sysconf("anything") is False  # type: ignore[attr-defined]
             assert urllib.request.getproxies_macosx_sysconf() == {}  # type: ignore[attr-defined]
         finally:
-            # Linux urllib has no darwin leaves; remove the ones the guard created.
-            for attr in ("proxy_bypass_macosx_sysconf", "getproxies_macosx_sysconf"):
-                if hasattr(urllib.request, attr):
-                    delattr(urllib.request, attr)
+            self._restore_leaves(snapshot)
+            _safety.uninstall_forksafe_getaddrinfo()
 
-    def test_noop_off_darwin(self):
-        import urllib.request
-
+    def test_noop_off_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from pytest_parallex import _safety
 
+        monkeypatch.setattr(_safety.sys, "platform", "linux")
+        before = self._snapshot_leaves()
         _safety.harden_darwin_fork_child()
-        assert not hasattr(urllib.request, "proxy_bypass_macosx_sysconf")
-        assert not hasattr(urllib.request, "getproxies_macosx_sysconf")
+        assert self._snapshot_leaves() == before
