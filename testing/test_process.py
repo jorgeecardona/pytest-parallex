@@ -9,9 +9,14 @@ that ran everything both exit 0.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
+
 
 class TestProcessBasic:
-    def test_reports_are_replayed_on_the_controller(self, pytester):
+    def test_reports_are_replayed_on_the_controller(self, pytester: pytest.Pytester) -> None:
         """The controller must report each test — not just exit 0.
 
         The old runner exited 0 while reporting nothing (workers printed to their own
@@ -29,7 +34,7 @@ class TestProcessBasic:
         result.assert_outcomes(passed=3)
         assert result.ret == 0
 
-    def test_failures_are_counted(self, pytester):
+    def test_failures_are_counted(self, pytester: pytest.Pytester) -> None:
         """Every failure must show up, not collapse to one."""
         pytester.makepyfile(
             """
@@ -42,12 +47,12 @@ class TestProcessBasic:
         result.assert_outcomes(passed=1, failed=2)
         assert result.ret == 1
 
-    def test_empty_suite(self, pytester):
+    def test_empty_suite(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("")
         result = pytester.runpytest("--parallel=process", "--parallel-workers=2")
         assert result.ret == 5  # EXIT_NOTESTSCOLLECTED
 
-    def test_spread_across_files(self, pytester):
+    def test_spread_across_files(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             test_one="def test_a(): pass",
             test_two="def test_b(): pass",

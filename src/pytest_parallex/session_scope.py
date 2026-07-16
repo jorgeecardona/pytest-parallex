@@ -26,11 +26,14 @@ controller owns the *server* and each worker opens its own *connection* to it.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
-import pytest
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    import pytest
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,9 @@ class EagerSetupResult:
 #: be hoisted anyway, and hand every worker the same database.
 WORKER_MARKERS = frozenset({"worker_id", "parallex_worker_id"})
 
+# Depth cap for walking fixture dependencies; pytest rejects real cycles at collection.
+_MAX_CLOSURE_DEPTH = 10
+
 
 def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     """True if this fixture depends on ``worker_id``, directly or through another fixture.
@@ -72,10 +78,10 @@ def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     says ``scope="session"`` means it.
 
     Requiring ``worker_id`` is a better marker than a decorator because suites already
-    write it that way. paas's own fixture is the archetype::
+    write it that way. A real adopting suite's fixture is the archetype::
 
         @pytest.fixture(scope="session")
-        def database_url(worker_id): ...   # carves paas_test_gw0, _gw1, ... per worker
+        def database_url(worker_id): ...   # carves app_test_gw0, _gw1, ... per worker
 
     It is declared session-scoped, but only because that is what xdist's session *means*.
     Hoisting it to the controller hands every worker one database, and a suite whose
@@ -84,7 +90,7 @@ def is_worker_scoped(name: str, item: pytest.Item, _depth: int = 0) -> bool:
     """
     if name in WORKER_MARKERS:
         return True
-    if _depth > 10:  # a cycle would be a pytest bug, but don't hang on one
+    if _depth > _MAX_CLOSURE_DEPTH:  # a cycle would be a pytest bug, but don't hang on one
         return False
     defs = item.session._fixturemanager.getfixturedefs(name, item)
     if not defs:
@@ -149,7 +155,7 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
     _activate_session_on_setup_stack(session)
 
     item = session.items[0]
-    request = item._request  # type: ignore[attr-defined]
+    request = cast("pytest.FixtureRequest", item._request)  # type: ignore[attr-defined]
     done: list[str] = []
     failures: list[tuple[str, str]] = []
 
@@ -157,7 +163,7 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
         for name in names:
             try:
                 request.getfixturevalue(name)
-            except Exception as exc:  # deliberately broad — re-raised in the worker, see docstring
+            except Exception as exc:  # noqa: PERF203 — one failed hoist must not abort its siblings
                 failures.append((name, repr(exc)))
                 # pytest caches a fixture-body exception on the FixtureDef, and children
                 # inherit that cache — so without this, a failed hoist doesn't fall back
@@ -179,7 +185,9 @@ def setup_session_fixtures(session: pytest.Session, names: list[str]) -> EagerSe
 
 
 @contextmanager
-def _borrowed_item_active(session: pytest.Session, item: pytest.Item) -> Iterator[None]:
+def _borrowed_item_active(
+    session: pytest.Session, item: pytest.Item
+) -> Generator[None, None, None]:
     """Make the borrowed item look set-up for the duration of the hoist.
 
     ``getfixturevalue`` decides it is being called "during teardown" by asking

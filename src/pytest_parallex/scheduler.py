@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    import pytest
 
 T = TypeVar("T")
 
@@ -23,7 +26,7 @@ def schedule_round_robin(items: list[T], num_workers: int) -> list[list[T]]:
     return chunks
 
 
-def group_by_scope(items: list) -> list[list]:
+def group_by_scope(items: list[pytest.Item]) -> list[list[pytest.Item]]:
     """Group items by module, largest group first.
 
     Keeps a module's tests together so module-scoped fixtures are set up once per
@@ -34,7 +37,7 @@ def group_by_scope(items: list) -> list[list]:
     if not items:
         return []
 
-    groups: dict[str, list] = {}
+    groups: dict[str, list[pytest.Item]] = {}
     for item in items:
         groups.setdefault(str(item.path), []).append(item)
     return sorted(groups.values(), key=len, reverse=True)
@@ -43,7 +46,7 @@ def group_by_scope(items: list) -> list[list]:
 _COARSE_SCOPES = frozenset({"package", "module", "class"})
 
 
-def _keeps_module_together(item: Any) -> bool:
+def _keeps_module_together(item: pytest.Item) -> bool:
     """True if this test needs a fixture set up per-module (or coarser) in the worker.
 
     A module's tests must stay on one worker only to keep such a fixture set up once for
@@ -68,7 +71,7 @@ def _keeps_module_together(item: Any) -> bool:
     return False
 
 
-def plan_fork_claims(items: list) -> list[list]:
+def plan_fork_claims(items: list[pytest.Item]) -> list[list[pytest.Item]]:
     """The unit of work each forked worker claims off the shared counter.
 
     Extends ``group_by_scope`` with one move that removes fork's worst case. A module was
@@ -89,12 +92,12 @@ def plan_fork_claims(items: list) -> list[list]:
     if not items:
         return []
 
-    modules: dict[str, list] = {}
+    modules: dict[str, list[pytest.Item]] = {}
     for item in items:
         modules.setdefault(str(item.path), []).append(item)
 
-    grouped: list[list] = []
-    singletons: list[list] = []
+    grouped: list[list[pytest.Item]] = []
+    singletons: list[list[pytest.Item]] = []
     for group in modules.values():
         if any(_keeps_module_together(it) for it in group):
             grouped.append(group)
@@ -106,9 +109,9 @@ def plan_fork_claims(items: list) -> list[list]:
 
 
 def schedule_by_scope(
-    items: list,  # list[pytest.Item] but avoiding import
+    items: list[pytest.Item],
     num_workers: int,
-) -> list[list]:
+) -> list[list[pytest.Item]]:
     """STATIC module-grouped partition — deal every group up front, then run.
 
     Only for the thread/async runners, which share one address space and so cannot
@@ -133,7 +136,7 @@ def schedule_by_scope(
 
     sorted_groups = group_by_scope(items)
     actual_workers = min(num_workers, len(sorted_groups))
-    chunks: list[list] = [[] for _ in range(actual_workers)]
+    chunks: list[list[pytest.Item]] = [[] for _ in range(actual_workers)]
 
     for group in sorted_groups:
         lightest = min(range(actual_workers), key=lambda i: len(chunks[i]))

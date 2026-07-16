@@ -8,11 +8,16 @@ summary line — see the header of test_thread.py for why that distinction is th
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from conftest import suite
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestAsyncBasic:
-    def test_tests_actually_run_on_workers(self, pytester):
+    def test_tests_actually_run_on_workers(self, pytester: pytest.Pytester) -> None:
         """Not serial-in-disguise: async workers report 'a0'/'a1', a serial run 'main'."""
         pytester.makepyfile(
             """
@@ -29,21 +34,22 @@ class TestAsyncBasic:
         result.assert_outcomes(passed=2)
 
         who = set((pytester.path / "who").read_text().split())
-        assert who and "main" not in who, f"ran serially: {who}"
+        assert who, "no worker wrote its id"
+        assert "main" not in who, f"ran serially: {who}"
         assert all(w.startswith("a") for w in who), who
 
-    def test_reports_failures(self, pytester):
+    def test_reports_failures(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("def test_a(): assert False")
         result = pytester.runpytest("--parallel=async", "--parallel-workers=1")
         result.assert_outcomes(failed=1)
         assert result.ret == 1
 
-    def test_empty_suite(self, pytester):
+    def test_empty_suite(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("")
         result = pytester.runpytest("--parallel=async", "--parallel-workers=2")
         assert result.ret == 5  # EXIT_NOTESTSCOLLECTED
 
-    def test_every_test_runs_exactly_once(self, pytester):
+    def test_every_test_runs_exactly_once(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             import pytest
@@ -59,7 +65,7 @@ class TestAsyncBasic:
         ran = (pytester.path / "ran").read_text().split()
         assert sorted(map(int, ran)) == list(range(12)), sorted(ran)
 
-    def test_session_fixture_body_runs_once(self, pytester):
+    def test_session_fixture_body_runs_once(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             suite(
                 """

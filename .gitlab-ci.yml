@@ -46,7 +46,7 @@ ci:
     # Fetch proto straight from its GitHub release. moonrepo.dev/install/proto.sh merely downloads
     # this tarball, and the runner's access to moonrepo.dev is flaky (curl SSL timeouts); GitHub is
     # reliable. `proto install` then pulls the pinned toolchain from each tool's own upstream — not
-    # moonrepo. (Same fix as paas's and musil's CI image.)
+    # moonrepo.
     - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
     - proto install                       # moon + uv, pinned in .prototools
     - uv sync --frozen                    # ruff + pyright + pytest + pytest-xdist
@@ -66,7 +66,7 @@ ci:
 # Publish the docs to GitLab Pages. A job named `pages` whose artifact is public/ is what
 # GitLab serves. Builds the same mkdocs site as the `docs` task (strict), but into public/.
 # main only; independent of `ci` (docs aren't gated on tests). Uses the uv image directly —
-# no proto/moon needed here. (Same pattern as musil.)
+# no proto/moon needed here.
 pages:
   image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
   needs: []

@@ -13,7 +13,7 @@ That makes fork mode a **local TDD-loop feature, not a CI feature**:
 | suite | xdist | fork | verdict |
 |---|---|---|---|
 | 3s local run | 3.21s | 1.75s | **1.84x — you feel this** |
-| paas CI `api:test` (292s) | — | −2s | **under 1%. noise.** |
+| reference CI suite (292s) | — | −2s | **under 1%. noise.** |
 
 ## The thesis that died
 
@@ -50,7 +50,7 @@ pytest for hours. The tell was CPU utilization: **0.9 cores busy on a 16-worker 
 running looks like a slow parallel runner, not like a broken one.* Check `user`/`real` before
 believing any parallel benchmark.
 
-**2. Benchmarking a suite that can't fork.** With the hook fixed, paas's suite refuses outright:
+**2. Benchmarking a suite that can't fork.** With the hook fixed, the reference suite refuses outright:
 
 ```
 --parallel=fork requires a quiet process at fork time, but 1 non-main thread(s)
@@ -81,7 +81,7 @@ the truth. Model CPU-bound work with CPU-bound work.
 - **The zygote effect is real but narrow.** Forking a parent that has already paid a 904ms
   `create_app()` costs **1.56ms/child, flat out to 248 children**. Whether that is worth anything
   depends entirely on whether the suite is CPU-bound — see below.
-- **Dynamic scheduling beat static by only 6%** on the paas suite (411.5s → 386.5s), far under the
+- **Dynamic scheduling beat static by only 6%** on the reference suite (411.5s → 386.5s), far under the
   1.43x predicted from per-module costs. Both numbers are void anyway (trap 1), but the
   claim-counter queue is the right design regardless: a static deal must guess a group's cost from
   its test *count*, and on a suite whose modules ranged 0.1s–167s that guess is bad.
@@ -99,7 +99,7 @@ issue is no longer warranted by default."* The cost of a preloader is constant; 
 with hardware. That is the same shape as the flat 1.5–2.3s measured above.
 
 Open questions, in order:
-1. **Can a suite be made forkable?** paas can't fork because of one third-party logging thread. A
+1. **Can a suite be made forkable?** The reference suite can't fork because of one third-party logging thread. A
    `pytest_parallex_pre_fork` / `post_fork` hook pair would let the suite author quiesce and restart
    what the plugin can't know about (Android's `Daemons.stop()`, Passenger's
    `:starting_worker_process`, Spring's `after_fork` — every prior system converged on this).
@@ -107,7 +107,7 @@ Open questions, in order:
    pays only that module's import. Measure fork against the workflows people actually use, not
    against a full-suite run.
 3. **Does the zygote matter for anyone?** It only pays where per-test setup is expensive AND
-   CPU-bound. paas's setup is expensive but I/O-bound (Postgres), so it wouldn't have helped there.
+   CPU-bound. the reference suite's setup is expensive but I/O-bound (Postgres), so it wouldn't have helped there.
 
 ---
 

@@ -21,6 +21,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -38,7 +39,7 @@ from pytest_parallex.scheduler import schedule_round_robin
 class _WorkerResult:
     worker_id: str
     returncode: int
-    payload: list
+    payload: list[Any]
     output: str
 
 
@@ -48,7 +49,7 @@ class ProcessRunner:
         self.num_workers = num_workers
 
     @pytest.hookimpl(trylast=True)
-    def pytest_sessionstart(self, session: pytest.Session) -> None:
+    def pytest_sessionstart(self) -> None:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
 
@@ -170,6 +171,7 @@ def _run_worker_subprocess(
     nodeids: list[str],
     rootdir: str,
     base_args: list[str],
+    *,
     capture: bool = True,
 ) -> _WorkerResult:
     """Run a subset of tests in a fresh interpreter and bring its reports home."""
@@ -186,12 +188,14 @@ def _run_worker_subprocess(
         # into noise, and the controller reprints all of it from the replayed reports
         # anyway. What we keep is only used to explain a worker that died before it could
         # report. Under -s the user has asked for the raw stream, so we let it through.
-        proc = subprocess.run(
+        # check=False: a non-zero exit (failing tests) is inspected by the caller.
+        proc = subprocess.run(  # noqa: S603 — argv is sys.executable + our own args
             cmd,
             cwd=rootdir,
             env=env,
             capture_output=capture,
             text=True,
+            check=False,
         )
         return _WorkerResult(
             worker_id=worker_id,

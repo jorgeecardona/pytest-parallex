@@ -2,7 +2,7 @@
 # pytest-parallex — parallel test execution where scope="session" means session:
 # the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
-version = "0.1.12"
+version = "0.1.13"
 # Kept short: this is the one-line blurb in PyPI search results, which truncates around
 # 100-150 chars. The old one ran to 164 and got cut mid-sentence.
 description = "Parallel pytest where session fixtures run once for the whole run, not once per worker"
@@ -81,8 +81,30 @@ target-version = "py310"
 src = ["src", "testing"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
-ignore = ["E501"]
+# Strict: everything on, each opt-out justified.
+select = ["ALL"]
+ignore = [
+    "E501",    # line length is the formatter's job (line-length = 100)
+    "COM812",  # trailing commas conflict with `ruff format` (ruff's own recommendation)
+    "D1",      # not every helper owes a docstring; the ones that exist explain *why*
+    "D401",    # docstrings here are narrative rationale, not imperative summaries
+    "ANN401",  # Any is the honest type for pytest internals we patch (FixtureDef slots etc.)
+    "SLF001",  # reaching into pytest privates (_pytest.runner, FixtureDef...) IS the plugin
+    "PLC0415", # local imports are load-bearing: they defer work past fork/collection time
+    "TRY003", "EM101", "EM102",  # inline exception messages; msg-variable style adds noise
+    "BLE001",  # best-effort teardown/cleanup paths catch Exception on purpose
+    "PLW0603", # the install/uninstall patch pairs keep module-level state via `global`
+]
+
+[tool.ruff.lint.per-file-ignores]
+"testing/*" = [
+    "S101",    # asserts are the point of tests
+    "PLR2004", # literal expectations in asserts are clearer than named constants
+    "ARG",     # pytest hook/fixture signatures are fixed; params can go unused
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
 
 [tool.ruff.lint.isort]
 known-first-party = ["pytest_parallex"]
@@ -91,10 +113,9 @@ known-first-party = ["pytest_parallex"]
 include = ["src", "testing"]
 extraPaths = ["src"]
 pythonVersion = "3.10"
-# `basic`, not musil's `strict`: this plugin reaches into pytest's private internals by
-# necessity (TestReport._to_json, FixtureDef.cached_result, Session._setupstate), and
-# stashes its own attributes on Config. Those are untyped or unknown to pyright by
-# construction, so strict mode reports the design rather than any defect.
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"
+# The plugin reaches into pytest privates by design (TestReport._to_json,
+# FixtureDef.cached_result, Session._setupstate); everything else stays strict.
+reportPrivateUsage = false
 venvPath = "."
 venv = ".venv"

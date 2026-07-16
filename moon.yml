@@ -59,10 +59,8 @@ tasks:
       cache: false
 
   # The single aggregate gate: the whole CI check graph in one target.
-  # No docs task here (unlike musil): this project's docs are README + docs/*.md, with
-  # no mkdocs build to fail. format-check IS in the gate here, which musil's isn't —
-  # only because this project is new enough that getting format-clean cost 6 files
-  # instead of 41. Cheaper to gate it from the start than to retrofit it later.
+  # format-check IS in the gate — this project is new enough that getting
+  # format-clean was cheap, and gating it from the start beats retrofitting it.
   ci:
     command: 'noop'
     deps:

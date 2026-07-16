@@ -15,8 +15,8 @@ carry across a process boundary.
 from __future__ import annotations
 
 import contextlib
-import os
 import pickle
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -53,15 +53,15 @@ class ReportWriter(ReportCollector):
 
 
 def write_reports(path: str, collected: list[Any]) -> None:
-    with open(path, "wb") as fh:
+    with Path(path).open("wb") as fh:
         pickle.dump(collected, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def read_reports(path: str) -> list[Any]:
     """Read a worker's reports. A worker that died before writing yields no reports."""
     try:
-        with open(path, "rb") as fh:
-            return pickle.load(fh)
+        with Path(path).open("rb") as fh:
+            return pickle.load(fh)  # noqa: S301 — written by our own worker this run
     except (OSError, EOFError, pickle.UnpicklingError):
         return []
 
@@ -86,4 +86,4 @@ def replay(config: pytest.Config, payload: list[Any]) -> None:
 def unlink_quietly(path: str) -> None:
     """Remove a worker's report file. A failure here must not fail the run."""
     with contextlib.suppress(OSError):
-        os.unlink(path)
+        Path(path).unlink()

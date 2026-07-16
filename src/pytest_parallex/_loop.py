@@ -7,11 +7,12 @@ when forgotten.
 
 from __future__ import annotations
 
-from typing import Any
-
-import pytest
+from typing import TYPE_CHECKING, Any
 
 from pytest_parallex import _worker_id_local
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def run_chunk(

@@ -25,8 +25,12 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 from pytest_parallex._loop import raise_if_collection_failed
 from pytest_parallex._reports import (
@@ -72,7 +76,7 @@ class ForkRunner:
     # executes while every test still passes, serially. That failure is invisible except
     # as a suspiciously low core count.
     @pytest.hookimpl(tryfirst=True)
-    def pytest_runtestloop(self, session: pytest.Session) -> bool:
+    def pytest_runtestloop(self, session: pytest.Session) -> bool:  # noqa: C901 — the fork lifecycle reads top to bottom
         raise_if_collection_failed(session)
         if session.config.option.collectonly or not session.items:
             return True
@@ -214,7 +218,7 @@ class ForkRunner:
     def _run_claimed(
         self,
         groups: list[list[pytest.Item]],
-        claim,  # multiprocessing.Value — no public type to annotate against
+        claim: Synchronized[int],
         worker_id: str,
         path: str,
     ) -> int:
@@ -224,7 +228,7 @@ class ForkRunner:
         harden_darwin_fork_child()
 
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
-        session: pytest.Session = self.config._parallex_session  # type: ignore[attr-defined]
+        session = cast("pytest.Session", self.config._parallex_session)  # type: ignore[attr-defined]
 
         # The child must not re-enter this runner's runtestloop.
         self.config.pluginmanager.unregister(name="parallel-runner")

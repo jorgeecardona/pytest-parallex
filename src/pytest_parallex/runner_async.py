@@ -32,7 +32,7 @@ class AsyncRunner:
         self.num_workers = num_workers
 
     @pytest.hookimpl(trylast=True)
-    def pytest_sessionstart(self, session: pytest.Session) -> None:
+    def pytest_sessionstart(self) -> None:
         data = self.config.hook.pytest_parallex_setup(config=self.config)
         self.config._parallel_setup_data = data or {}  # type: ignore[attr-defined]
         self.config.pluginmanager.register(ThreadSafeReporter(), "thread-safe-reporter")

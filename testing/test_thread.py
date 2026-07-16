@@ -15,11 +15,16 @@ it is worthless as evidence that something invisible happened.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from conftest import suite
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestThreadBasic:
-    def test_tests_actually_run_on_workers(self, pytester):
+    def test_tests_actually_run_on_workers(self, pytester: pytest.Pytester) -> None:
         """The runner must actually run — not hand the loop back to pytest.
 
         `pytest_runtestloop` is a firstresult hook, so a registration mistake makes pytest's
@@ -47,7 +52,7 @@ class TestThreadBasic:
         assert "main" not in who, f"tests ran serially — the runner never took the loop: {who}"
         assert all(w.startswith("w") for w in who), who
 
-    def test_reports_failures(self, pytester):
+    def test_reports_failures(self, pytester: pytest.Pytester) -> None:
         """A failing test must be reported as failed, with a non-zero exit.
 
         Asserting on the outcome is right here: reporting faithfully *is* a runner's
@@ -58,7 +63,7 @@ class TestThreadBasic:
         result.assert_outcomes(failed=1)
         assert result.ret == 1
 
-    def test_mixed_results(self, pytester):
+    def test_mixed_results(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             def test_pass(): assert True
@@ -69,12 +74,12 @@ class TestThreadBasic:
         result.assert_outcomes(passed=1, failed=1)
         assert result.ret == 1
 
-    def test_empty_suite(self, pytester):
+    def test_empty_suite(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("")
         result = pytester.runpytest("--parallel=thread", "--parallel-workers=2")
         assert result.ret == 5  # EXIT_NOTESTSCOLLECTED
 
-    def test_every_test_runs_exactly_once(self, pytester):
+    def test_every_test_runs_exactly_once(self, pytester: pytest.Pytester) -> None:
         """No test may be dropped or run twice.
 
         A work-distribution bug is far more likely to double-run or skip an item than to
@@ -99,7 +104,7 @@ class TestThreadBasic:
 
 
 class TestThreadFixtures:
-    def test_session_fixture_body_runs_once(self, pytester):
+    def test_session_fixture_body_runs_once(self, pytester: pytest.Pytester) -> None:
         """Counts executions of the fixture *body*, not what the fixture returned.
 
         The old version kept a module-global counter and asserted the fixture's value was
@@ -130,7 +135,7 @@ class TestThreadFixtures:
         setups = (pytester.path / "setups").read_text()
         assert len(setups) == 1, f"session fixture body ran {len(setups)}x, expected once"
 
-    def test_function_fixture_runs_per_test(self, pytester):
+    def test_function_fixture_runs_per_test(self, pytester: pytest.Pytester) -> None:
         """The mirror of the above: a function-scoped fixture must NOT be shared."""
         pytester.makepyfile(
             suite(
@@ -152,7 +157,7 @@ class TestThreadFixtures:
         setups = (pytester.path / "setups").read_text()
         assert len(setups) == 6, f"function fixture ran {len(setups)}x, expected once per test"
 
-    def test_yield_fixture_tears_down(self, pytester):
+    def test_yield_fixture_tears_down(self, pytester: pytest.Pytester) -> None:
         """Teardown must actually run — the half everyone forgets to assert."""
         pytester.makepyfile(
             """
@@ -174,7 +179,7 @@ class TestThreadFixtures:
 
 
 class TestThreadConcurrency:
-    def test_threads_really_overlap(self, pytester):
+    def test_threads_really_overlap(self, pytester: pytest.Pytester) -> None:
         """Tests must actually run at the same time.
 
         The old version of this test collected `threading.current_thread().ident` into a
@@ -215,7 +220,7 @@ class TestThreadConcurrency:
         )
         assert overlapping, f"no two tests ran at the same time — this was serial: {spans}"
 
-    def test_maxfail_stops_the_run(self, pytester):
+    def test_maxfail_stops_the_run(self, pytester: pytest.Pytester) -> None:
         """--maxfail must actually stop work, not just be reported.
 
         The old version asserted "*1 failed*", which is what you get whether the run

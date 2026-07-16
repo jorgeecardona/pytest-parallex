@@ -80,7 +80,7 @@ def pytest_configure(config: pytest.Config) -> None:
         # The archetype `def database_url(worker_id, server)` only works if it resolves in
         # EVERY way the suite is run — a conftest can't request a fixture that exists only
         # under --parallel, so without this, adopting the pattern broke plain `pytest`
-        # (found immediately on the first real adopter: accounting has no xdist, and its
+        # (found immediately on the first real adopter: a suite with no xdist, whose
         # serial run died with "fixture 'worker_id' not found"). When xdist IS installed
         # and idle we stay out of the way: its own fixture answers 'master', and suites
         # written against it may compare on exactly that string.
@@ -224,7 +224,9 @@ def parallex_mode(request: pytest.FixtureRequest) -> str | None:
     return request.config.getoption("parallel_mode", default=None)
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter, config: pytest.Config
+) -> None:
     """One line of ground truth about what the parallel run actually did.
 
     'N passed' is the same string whether the plugin parallelised, degraded, or did
