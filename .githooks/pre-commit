@@ -30,7 +30,8 @@ if printf '%s\n' "${staged[@]}" | grep -qE '^src/.*\.py$'; then
         echo "pre-commit: version already bumped in this commit -- leaving it alone"
     else
         ./scripts/bump-version patch
-        git add pyproject.toml uv.lock
+        # __init__.py carries the mirrored __version__ (see scripts/bump-version)
+        git add pyproject.toml uv.lock src/pytest_parallex/__init__.py
     fi
 fi
 

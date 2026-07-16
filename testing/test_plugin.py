@@ -5,6 +5,21 @@ from __future__ import annotations
 import pytest
 
 
+def test_dunder_version_matches_the_package_metadata():
+    """``pytest_parallex.__version__`` must equal the installed version.
+
+    The literal in __init__.py exists for humans (`pytest_parallex.__version__` at a
+    REPL); pyproject stays the release trigger. scripts/bump-version rewrites both, and
+    this is the guard for the day someone edits one by hand: the mirror is only safe
+    because drifting fails CI.
+    """
+    import importlib.metadata
+
+    import pytest_parallex
+
+    assert pytest_parallex.__version__ == importlib.metadata.version("pytest-parallex")
+
+
 class TestOptions:
     def test_parallel_option_recognized(self, pytester):
         pytester.makepyfile("def test_a(): pass")

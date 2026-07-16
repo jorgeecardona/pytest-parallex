@@ -34,6 +34,8 @@ esac
 
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 sed -i -E "s/^version = \"${CURRENT}\"/version = \"${NEW}\"/" pyproject.toml
+# __version__ in the package mirrors pyproject (testing/test_plugin.py asserts they match).
+sed -i -E "s/^__version__ = \"${CURRENT}\"/__version__ = \"${NEW}\"/" src/pytest_parallex/__init__.py
 
 # Keep uv.lock's pinned pytest-parallex version in sync so the working tree stays clean
 # (offline + cached = fast; online fallback for a cold cache).
