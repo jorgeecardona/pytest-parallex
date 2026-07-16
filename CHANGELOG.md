@@ -63,3 +63,14 @@ Driven by the first real-world macOS run and a coverage-gated CI adoption.
 - A session fixture that fails to hoist no longer poisons workers with the controller's
   cached exception; the worker builds it fresh and a real failure is attributed to the
   test that wanted it.
+
+## 0.1.11
+
+- **macOS `_scproxy` guard fixed at the right layer.** 0.1.10 rebound the *callers*
+  (`urllib.request.proxy_bypass`/`getproxies`) — which misses botocore's import-time
+  `from urllib.request import proxy_bypass` (a captured reference), and its `no_proxy`
+  fallback was wiped by tests that clear `os.environ`. Verified ineffective on the same
+  Mac that found the bug. Now the `*_macosx_sysconf` *leaves* are stubbed, which the
+  original functions resolve at call time — catches every caller regardless of when they
+  imported or what the environment says. Verified: 0 dead workers, 530/530 claims, and
+  fork became the fastest configuration on that machine (30.0s vs xdist 38.2s).

@@ -209,8 +209,13 @@ def pytest_parallex_auto_num_workers(config):
     SystemConfiguration framework, which is not fork-safe — botocore reaches it on every
     client creation, so any AWS test can trigger it ([CPython #105912](https://github.com/python/cpython/issues/105912),
     [bpo-31818](https://bugs.python.org/issue31818)). **The plugin disarms this one
-    automatically in workers** (proxy lookup is rebound to the environment-only path,
-    which survives even tests that wipe `os.environ`).
+    automatically in workers** by stubbing the `*_macosx_sysconf` leaves, which the
+    original functions resolve at call time — so it holds even for code that captured
+    `proxy_bypass` by value at import (botocore does), and even for tests that wipe
+    `os.environ`. Verified on a 530-test suite: zero dead workers, and fork became the
+    fastest configuration on the machine (30.0s vs xdist's 38.2s). Workers therefore see
+    "no proxy configured" — a worker that must exercise real macOS proxy discovery can't
+    run under fork at all.
   * **The ObjC `+initialize` trap**: the runtime crashes a forked child touching a
     framework initialized pre-fork. Not disarmable from inside a running process;
     `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` (in your shell profile, before

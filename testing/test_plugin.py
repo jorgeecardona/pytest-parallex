@@ -118,56 +118,42 @@ class TestDarwinForkCaveat:
 
 
 class TestDarwinScproxyGuard:
-    """The _scproxy hardening — the crash a real Mac actually hit.
+    """The _scproxy hardening — the crash a real Mac actually hit, fixed at the right layer.
 
-    Verified there: workers SIGSEGV'd inside urllib's proxy_bypass_macosx_sysconf
-    (SystemConfiguration via _scproxy, reached from botocore's proxy detection), and
-    OBJC_DISABLE_INITIALIZE_FORK_SAFETY did nothing — different trap. The guard rebinds
-    urllib's proxy functions to the _environment variants (survives tests that clear
-    os.environ) and sets no_proxy='*' when nothing proxy-ish is set.
+    Workers SIGSEGV'd inside urllib's proxy_bypass_macosx_sysconf (SystemConfiguration via
+    _scproxy, reached from botocore's proxy detection). Two earlier layers failed on the
+    same hardware: rebinding the CALLERS missed botocore's import-time `from urllib.request
+    import proxy_bypass` (a captured reference), and a no_proxy env fallback was wiped by
+    `patch.dict(os.environ, clear=True)`. Patching the LEAVES works because the original
+    proxy_bypass resolves them in urllib.request's globals at call time — verified on the
+    Mac: 0 dead workers, 530/530 claims.
+
+    On Linux the darwin-only leaves don't exist to exercise end-to-end; these tests pin
+    what is verifiable here: the stubs are installed on (faked) darwin, behave, and nothing
+    is touched elsewhere.
     """
 
-    def test_rebinds_urllib_and_sets_no_proxy(self, monkeypatch):
+    def test_installs_leaf_stubs_on_darwin(self, monkeypatch):
         import urllib.request
 
         from pytest_parallex import _safety
 
         monkeypatch.setattr(_safety.sys, "platform", "darwin")
-        for k in list(__import__("os").environ):
-            if k.lower().endswith("_proxy"):
-                monkeypatch.delenv(k)
-        monkeypatch.setattr(urllib.request, "getproxies", object(), raising=True)
-
         _safety.harden_darwin_fork_child()
+        try:
+            assert urllib.request.proxy_bypass_macosx_sysconf("anything") is False  # type: ignore[attr-defined]
+            assert urllib.request.getproxies_macosx_sysconf() == {}  # type: ignore[attr-defined]
+        finally:
+            # Linux urllib has no darwin leaves; remove the ones the guard created.
+            for attr in ("proxy_bypass_macosx_sysconf", "getproxies_macosx_sysconf"):
+                if hasattr(urllib.request, attr):
+                    delattr(urllib.request, attr)
 
-        assert urllib.request.getproxies is urllib.request.getproxies_environment
-        assert urllib.request.proxy_bypass is urllib.request.proxy_bypass_environment  # type: ignore[attr-defined]
-        assert __import__("os").environ.get("no_proxy") == "*"
-
-    def test_respects_an_existing_proxy_config(self, monkeypatch):
-        """A suite that points at a real proxy keeps it — we only fill the vacuum."""
-        from pytest_parallex import _safety
-
-        monkeypatch.setattr(_safety.sys, "platform", "darwin")
-        monkeypatch.setenv("https_proxy", "http://corp-proxy:3128")
-        monkeypatch.delenv("no_proxy", raising=False)
-
-        _safety.harden_darwin_fork_child()
-
-        import os
-
-        assert os.environ["https_proxy"] == "http://corp-proxy:3128"
-        assert "no_proxy" not in os.environ
-
-    def test_noop_off_darwin(self, monkeypatch):
+    def test_noop_off_darwin(self):
         import urllib.request
 
         from pytest_parallex import _safety
 
-        before = urllib.request.getproxies
-        monkeypatch.delenv("no_proxy", raising=False)
         _safety.harden_darwin_fork_child()
-        assert urllib.request.getproxies is before
-        import os
-
-        assert "no_proxy" not in os.environ
+        assert not hasattr(urllib.request, "proxy_bypass_macosx_sysconf")
+        assert not hasattr(urllib.request, "getproxies_macosx_sysconf")
