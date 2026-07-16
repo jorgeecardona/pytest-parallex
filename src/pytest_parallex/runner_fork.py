@@ -42,7 +42,7 @@ from pytest_parallex._safety import (
     quiesce_known_threads,
     restart_quiesced,
 )
-from pytest_parallex.scheduler import group_by_scope
+from pytest_parallex.scheduler import plan_fork_claims
 from pytest_parallex.session_scope import (
     detach_in_child,
     session_fixture_names,
@@ -123,7 +123,7 @@ class ForkRunner:
                 f"use --parallel=process."
             ) from exc
 
-        groups = group_by_scope(session.items)
+        groups = plan_fork_claims(session.items)
         children = self._fork_children(groups, quiesced)
         restart_quiesced(quiesced)  # controller gets its logging back
         failed = self._collect_reports(session, children)

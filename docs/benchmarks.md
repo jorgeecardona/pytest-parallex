@@ -156,3 +156,31 @@ This is a real ceiling, not a tuning bug: module granularity is what lets a modu
 fixture stay set up for its whole module in one worker. Splitting tests across workers the
 way xdist does would give that up. It's the correct trade for the feature, and it costs
 exactly this.
+
+---
+
+# The module-granularity ceiling is gone — 2026-07-16
+
+The "fork loses when there are fewer modules than cores" result above (fork 4.32s vs xdist
+2.75s; fork 8.79s vs xdist 4.37s on one big module) was a **scheduler** limit, not a
+fork limit, and it's fixed.
+
+`plan_fork_claims` replaced `group_by_scope` as the fork work-list. A module whose tests
+keep no coarse (package/module/class) fixture alive is dealt as individual tests any worker
+can claim; a module that owns such a fixture still stays whole, so the fixture is set up
+once for it. So pure-function-fixture modules — most modules — now fill every core, and
+fork's warm start (no per-worker interpreter boot) makes it *faster* than xdist where it
+used to be slower.
+
+Re-measured, 16 cores, same shapes as above:
+
+| suite | xdist | fork (before) | fork (after) |
+|---|---|---|---|
+| 4 modules, 64 quick tests | 1.39s | 1.13s | **0.33s** |
+| 4 modules, 32 slow tests | 2.62s | 4.32s | **1.30s** |
+| 1 module, 16 slow tests | 2.02s | 8.79s | **0.76s** |
+
+The remaining honest ceiling: one big module with a real module fixture still runs on one
+worker (splitting it would re-run the fixture per worker, which is the xdist behaviour this
+plugin exists to avoid). If that single module dominates a suite's runtime, xdist can
+spread it wider by paying for the fixture N times. Everything else fills the machine.

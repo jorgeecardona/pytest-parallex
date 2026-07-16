@@ -7,9 +7,9 @@ pip install pytest-parallex
 pytest --parallel=fork
 ```
 
-This is not mainly a speed tool — see [below](#is-it-faster-than-xdist). It's a simpler
-model: one container for the run instead of one per worker, and fixtures you can write the
-obvious way.
+The draw is the fixture model — one container for the run instead of one per worker, and
+fixtures you write the obvious way. It's also usually [faster than xdist](#is-it-faster-than-xdist),
+because it forks warm instead of booting an interpreter per worker.
 
 ## Why
 
@@ -60,26 +60,27 @@ pytest --parallel=fork --parallel-workers=8
 
 Usually not by much, and sometimes it's slower. Speed isn't the reason to use this.
 
-Both tools run your tests on N processes, so the parallelism is the same. Measured on 16
-cores:
+Both tools run your tests on N processes. The difference is startup: xdist spawns a fresh
+interpreter per worker and re-imports your suite in each; fork forks warm from a process
+that already imported everything, at about a millisecond per worker. So when both fill the
+machine, fork tends to come out ahead. Measured on 16 cores:
 
 | suite | xdist | parallex fork | |
 |---|---|---|---|
-| 4 modules, 64 quick tests | 1.64s | 1.13s | fork saves worker startup |
-| 4 modules, 32 slow tests | 2.75s | **4.32s** | **fork is 1.6x slower** |
-| 8 modules, 2s session fixture | 3.16s | 2.49s | barely different |
+| 4 modules, 64 quick tests | 1.39s | 0.33s | fork skips 16 interpreter boots |
+| 4 modules, 32 slow tests | 2.62s | 1.30s | ~2x |
+| 1 module, 16 slow tests | 2.02s | 0.76s | the case fork used to lose |
 
-The one where fork loses is the important one to understand. xdist hands out individual
-tests; fork hands out whole modules. So if you have fewer modules than cores, fork can't
-fill the machine — 4 modules means 4 workers no matter what you pass to
-`--parallel-workers`.
+That last row used to be fork's worst: it dealt work by whole module, so a single big file
+ran on one worker while xdist spread it across all of them. Now a module whose tests use
+only function and session fixtures is dealt test-by-test, so it fills the machine like
+xdist does — minus the per-worker interpreter startup.
 
-And the row that looks like it should be a blowout isn't. xdist boots that 2-second fixture
-in all 8 workers, but it boots them *at the same time*, on cores that were idle anyway. 8
-boots cost about 2 seconds of wall clock, not 16. Running it once saves you real CPU, but
-CPU you weren't using isn't time you get back. (Same for imports — that's why fork's
-startup saving is a flat ~1.5–2.3s that doesn't grow with your suite. On a 3s local run you
-notice it; on a 292s CI suite it's under 1%.)
+The honest limit that remains: a module that owns a **module- or class-scoped fixture**
+stays on one worker, because that is what keeps the fixture set up once for the module.
+Such a module can't use more than one core no matter what you pass to `--parallel-workers`.
+If one giant module with a module fixture dominates your runtime, xdist (which re-runs that
+fixture per worker) can still spread it wider — at the cost of running it N times.
 
 ## So why use it?
 
@@ -200,8 +201,9 @@ def pytest_parallex_auto_num_workers(config):
 - `--maxfail` won't cut a fork run short. Workers finish the group they claimed and the
   controller replays the reports afterwards, so the count is right but the run isn't
   stopped early.
-- fork splits work by module, so a suite in a single file uses one worker regardless of
-  `--parallel-workers`.
+- a module that owns a module- or class-scoped fixture runs on one worker (that's what
+  keeps the fixture set up once for it). Modules using only function and session fixtures
+  are split across workers freely.
 - fork is Linux and macOS only. On Windows use `--parallel=process`.
 - thread and async don't get around the GIL. They help suites that wait, not suites that
   compute.

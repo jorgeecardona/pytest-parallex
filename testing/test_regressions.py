@@ -104,6 +104,68 @@ class TestFixtureCaching:
         assert result.ret != 0
 
 
+class TestForkFillsWorkers:
+    """A big module of function-fixture tests must use more than one worker.
+
+    fork dealt work by module, so parallelism was capped at ``min(workers, modules)`` — one
+    big file ran on a single worker, i.e. serially, while xdist spread the same tests over
+    every core. ``plan_fork_claims`` deals a module that keeps no coarse fixture alive as
+    individual tests, so they fill the machine. A module that owns a module/class fixture
+    still stays whole; that half is ``test_a_module_fixture_module_is_not_split`` below.
+
+    Asserting on the count of distinct workers, because "did it parallelise" is invisible in
+    the summary — a serial run and a fully-spread run both print the same "N passed".
+    """
+
+    def test_a_pure_function_module_spreads_across_workers(self, pytester):
+        pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.fixture
+            def f():
+                return 1
+
+            @pytest.mark.parametrize("n", range(16))
+            def test_n(n, f, worker_id):
+                with open("workers", "a") as fh:
+                    fh.write(worker_id + "\\n")
+            """
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=8")
+        result.assert_outcomes(passed=16)
+
+        workers = set((pytester.path / "workers").read_text().split())
+        assert len(workers) > 1, (
+            f"16 tests in one module ran on {workers} — fork used a single worker, i.e. serial"
+        )
+
+    def test_a_module_fixture_module_is_not_split(self, pytester):
+        """The other half: a module with a module fixture stays on one worker, built once."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.fixture(scope="module")
+            def heavy():
+                with open("builds", "a") as fh:
+                    fh.write("x")
+                return 1
+
+            @pytest.mark.parametrize("n", range(12))
+            def test_n(n, heavy):
+                assert heavy == 1
+            """
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=8")
+        result.assert_outcomes(passed=12)
+
+        builds = (pytester.path / "builds").read_text()
+        assert len(builds) == 1, (
+            f"module fixture built {len(builds)}x — the module was split when it must stay whole"
+        )
+
+
 class TestFunctionFixtureIsolation:
     """The bug that shipped in 0.1.1-0.1.4 and that the old suite could not see.
 

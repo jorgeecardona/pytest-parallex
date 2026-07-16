@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from pytest_parallex.scheduler import schedule_round_robin
+from pytest_parallex.scheduler import plan_fork_claims, schedule_round_robin
+
+
+class TestPlanForkClaims:
+    """``plan_fork_claims`` needs live pytest items to inspect fixture closures, so its
+    behaviour is covered end-to-end in test_regressions.py::TestForkFillsWorkers. These
+    pin the parts that are pure list-shaping and need no fixtures.
+    """
+
+    def test_empty(self):
+        assert plan_fork_claims([]) == []
 
 
 class TestRoundRobin:
