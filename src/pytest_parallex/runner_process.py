@@ -127,6 +127,14 @@ _OWN_OPTIONS = {
     "--parallex-no-session-scope": False,
 }
 
+#: Coverage options that belong to the controller's session alone. Workers keep ``--cov``
+#: so their executed lines are measured, but reporting and gating happen exactly once, on
+#: the controller's combined data. Same following-token convention as ``_OWN_OPTIONS``.
+_CONTROLLER_ONLY_OPTIONS = {
+    "--cov-report": True,
+    "--cov-fail-under": True,
+}
+
 
 def _get_base_args(config: pytest.Config) -> list[str]:
     """The user's own pytest args, forwarded to a worker.
@@ -137,12 +145,16 @@ def _get_base_args(config: pytest.Config) -> list[str]:
     options. A worker configured differently from the controller is a worker whose results
     don't mean what the summary says they mean.
 
-    Two things are deliberately removed:
+    Deliberately removed:
 
     * Parallex's own options. A worker that re-read ``--parallel`` would fan out again,
       and its workers would fan out again. Their absence is what terminates the recursion.
     * The positional test paths, which the caller replaces with explicit nodeids — leaving
       them in would make every worker run the whole suite.
+    * Coverage reporting and gating. A worker keeps measuring (``--cov`` stays), but
+      ``--cov-report=`` and ``--cov-fail-under=0`` are pinned so a worker never renders a
+      report and never fails on its own subset's coverage — ``fail_under`` judged against
+      one worker's slice of the suite fails suites whose combined coverage is fine.
     """
     positional = set(config.args)
     args: list[str] = []
@@ -157,13 +169,40 @@ def _get_base_args(config: pytest.Config) -> list[str]:
             # A separate value token only follows when it wasn't glued on with '='.
             skip_next = _OWN_OPTIONS[name] and "=" not in token
             continue
+        if name in _CONTROLLER_ONLY_OPTIONS:
+            skip_next = _CONTROLLER_ONLY_OPTIONS[name] and "=" not in token
+            continue
         if token in positional:
             continue
         args.append(token)
 
     # The workers would otherwise race each other writing one .pytest_cache.
     args.extend(["-p", "no:cacheprovider"])
+
+    if getattr(config.option, "cov_source", None):
+        args.extend(["--cov-report=", "--cov-fail-under=0"])
     return args
+
+
+def _worker_environment(
+    worker_id: str, report_path: str, base_environment: dict[str, str]
+) -> dict[str, str]:
+    """The subprocess environment for one worker, coverage-namespaced.
+
+    Every worker session ends with pytest-cov combining ``$COVERAGE_FILE.*`` — on a shared
+    namespace, N workers combine and delete each other's data files mid-combine
+    (``sqlite3.OperationalError: no such table: other_db.file`` → INTERNALERROR exit 3,
+    with that worker's remaining tests reported MISSING; timing-dependent, so it surfaced
+    as a flaky CI task). Suffixing the worker id gives each worker a private namespace:
+    ``.coverage.w3`` combines only ``.coverage.w3.*``, and the controller's own combine at
+    session end sweeps up every ``.coverage.w*`` into the single gated, reported total.
+    """
+    environment = dict(base_environment)
+    environment["PYTEST_PARALLEL_WORKER"] = worker_id
+    environment[ENV_REPORT_PATH] = report_path
+    coverage_file = environment.get("COVERAGE_FILE", ".coverage")
+    environment["COVERAGE_FILE"] = f"{coverage_file}.{worker_id}"
+    return environment
 
 
 def _run_worker_subprocess(
@@ -178,9 +217,7 @@ def _run_worker_subprocess(
     fd, report_path = tempfile.mkstemp(prefix=f"pytest-parallex-{worker_id}-", suffix=".reports")
     os.close(fd)
 
-    env = os.environ.copy()
-    env["PYTEST_PARALLEL_WORKER"] = worker_id
-    env[ENV_REPORT_PATH] = report_path
+    env = _worker_environment(worker_id, report_path, dict(os.environ))
 
     cmd = [sys.executable, "-m", "pytest", *base_args, *nodeids]
     try:
