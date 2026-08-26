@@ -253,6 +253,35 @@ The env var is coverage's own switch for measuring in child processes; without i
 `patch = fork` silently does nothing and every line that ran only in a worker counts as
 unexecuted. If your CI gates on coverage, set it in the job env.
 
+## First-import caches (matplotlib, numba, pytensor)
+
+Some libraries build a cache on the **first import in a process**: matplotlib's font cache
+(`MPLCONFIGDIR`), numba (`NUMBA_CACHE_DIR`), pytensor's compiledir (pymc). When several
+processes build the same cold cache at once they can trip over each other's half-written
+files — the same class of race the per-worker `COVERAGE_FILE` namespace fixes for coverage.
+It is a CI-only shape: a developer's cache is warm from months of use, so it "passes locally,
+fails in CI" (a cold `MPLCONFIGDIR` with N forked importers reproduces "building the font
+cache" N times).
+
+Under `--parallel=fork` the plugin removes the race automatically: each worker is given a
+private cache dir (`MPLCONFIGDIR`, `NUMBA_CACHE_DIR`, pytensor `base_compiledir`) before it
+runs a test, and the controller deletes them at the end. The cost is that each worker builds
+its own copy of the cache.
+
+To pay that build **once** instead of per worker, import the library in the controller before
+the fork — a hoisted `scope="session"` fixture (or a `pytest_parallex_setup` hook) does this,
+and every child then inherits the warm cache through the fork for free:
+
+```python
+@pytest.fixture(scope="session", autouse=True)
+def _warm_import_caches():
+    import matplotlib.pyplot  # noqa: F401  — builds the font cache once, pre-fork
+```
+
+`--parallel=process` starts a fresh interpreter per worker, so there is no pre-fork controller
+to warm and no inherited cache; if a process-mode suite hits the same race, point each of those
+env vars at a per-worker path in your CI job.
+
 ## Developing
 
 ```bash

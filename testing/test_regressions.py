@@ -779,3 +779,70 @@ class TestCoverageUnderFork:
         result.assert_outcomes(passed=2)
         # 100%: both statements (def + body) executed — the body only ever in workers.
         result.stdout.fnmatch_lines(["*mypkg*100%*"])
+
+
+class TestFirstImportCacheIsolation:
+    """Forked workers must not share a cold first-import cache (GitLab #1).
+
+    matplotlib/numba/pytensor build a cache on first import; N children into one cold shared
+    dir build it at once and can trip over each other's half-written files. Each worker gets
+    a private dir instead, the same shape as the per-worker COVERAGE_FILE namespace.
+    """
+
+    def test_each_worker_gets_a_private_cache_namespace(self) -> None:
+        from pytest_parallex.runner_fork import _isolate_import_caches
+
+        f0: dict[str, str] = {}
+        _isolate_import_caches("f0", "/caches", f0)
+        assert f0["MPLCONFIGDIR"] == "/caches/f0/mpl"
+        assert f0["NUMBA_CACHE_DIR"] == "/caches/f0/numba"
+        assert f0["PYTENSOR_FLAGS"] == "base_compiledir=/caches/f0/pytensor"
+
+        f1: dict[str, str] = {}
+        _isolate_import_caches("f1", "/caches", f1)
+        assert f1["MPLCONFIGDIR"] == "/caches/f1/mpl"
+
+        # An existing PYTENSOR_FLAGS is kept; base_compiledir is appended, not replaced.
+        keep = {"PYTENSOR_FLAGS": "floatX=float32"}
+        _isolate_import_caches("f0", "/caches", keep)
+        assert keep["PYTENSOR_FLAGS"] == "floatX=float32,base_compiledir=/caches/f0/pytensor"
+
+    def test_workers_see_distinct_cache_dirs_at_runtime(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            import os
+            import pytest
+
+            @pytest.mark.parametrize("n", range(16))
+            def test_n(n, worker_id):
+                with open("caches", "a") as fh:
+                    fh.write(os.environ["MPLCONFIGDIR"] + "\\n")
+            """
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=8")
+        result.assert_outcomes(passed=16)
+
+        dirs = set((pytester.path / "caches").read_text().split())
+        assert len(dirs) > 1, f"every worker shared one MPLCONFIGDIR: {dirs}"
+        assert all("pytest-parallex-caches-" in d for d in dirs), dirs
+
+    def test_the_cache_root_is_cleaned_up(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            test_leak="""
+            import os
+
+            def test_records_root(worker_id):
+                # .../pytest-parallex-caches-XXXX/f0/mpl -> the caches root two levels up
+                root = os.path.dirname(os.path.dirname(os.environ["MPLCONFIGDIR"]))
+                with open("root", "w") as fh:
+                    fh.write(root)
+            """
+        )
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=2")
+        result.assert_outcomes(passed=1)
+
+        from pathlib import Path
+
+        root = (pytester.path / "root").read_text().strip()
+        assert "pytest-parallex-caches-" in root
+        assert not Path(root).exists(), f"controller left the cache root behind: {root}"

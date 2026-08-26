@@ -2,7 +2,7 @@
 # pytest-parallex — parallel test execution where scope="session" means session:
 # the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
-version = "0.2.2"
+version = "0.2.3"
 # Kept short: this is the one-line blurb in PyPI search results, which truncates around
 # 100-150 chars. The old one ran to 164 and got cut mid-sentence.
 description = "Parallel pytest where session fixtures run once for the whole run, not once per worker"

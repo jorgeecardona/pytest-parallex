@@ -21,15 +21,18 @@ from __future__ import annotations
 import ctypes
 import multiprocessing
 import os
+import shutil
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
     from multiprocessing.sharedctypes import Synchronized
 
 from pytest_parallex._loop import raise_if_collection_failed
@@ -129,6 +132,11 @@ class ForkRunner:
                 f"use --parallel=process."
             ) from exc
 
+        # Per-worker root for process-unsafe first-import caches (matplotlib, numba,
+        # pytensor). Created before the fork so children inherit the path; each child
+        # points its own env at a private subdir. See _isolate_import_caches and GitLab #1.
+        self._cache_root = tempfile.mkdtemp(prefix="pytest-parallex-caches-")  # type: ignore[attr-defined]
+
         groups = plan_fork_claims(session.items)
         children = self._fork_children(groups, quiesced)
         restart_quiesced(quiesced)  # controller gets its logging back
@@ -146,6 +154,10 @@ class ForkRunner:
         }
 
         failed = self._collect_reports(session, children)
+
+        # Every child has exited (waitpid above), so the per-worker cache subtrees are safe
+        # to remove wholesale.
+        shutil.rmtree(self._cache_root, ignore_errors=True)  # type: ignore[attr-defined]
 
         # Only the controller reaches here — children os._exit inside _fork_children — so
         # the session fixtures are finalized exactly once, after every worker is done with
@@ -226,6 +238,10 @@ class ForkRunner:
         # First thing in the child, before any test can import boto/requests/urllib:
         # on macOS, make the fork-unsafe _scproxy path unreachable. See _safety.
         harden_darwin_fork_child()
+
+        # Before any test imports matplotlib/numba/pytensor: give this child private
+        # first-import cache dirs so N children don't race one cold shared cache.
+        _isolate_import_caches(worker_id, self._cache_root)  # type: ignore[attr-defined]
 
         self.config._parallel_worker_id = worker_id  # type: ignore[attr-defined]
         session = cast("pytest.Session", self.config._parallex_session)  # type: ignore[attr-defined]
@@ -323,6 +339,31 @@ class ForkRunner:
                 )
                 failed += 1
         return failed
+
+
+def _isolate_import_caches(
+    worker_id: str, root: str, env: MutableMapping[str, str] | None = None
+) -> None:
+    """Point this child's process-unsafe first-import caches at a private per-worker dir.
+
+    matplotlib (``MPLCONFIGDIR``), numba (``NUMBA_CACHE_DIR``) and pytensor
+    (``base_compiledir``) each build a cache the first time they are imported. N children
+    forked into one cold shared dir build it at once and can trip over each other's
+    half-written files (GitLab #1: a font-cache build failed with ``FileNotFoundError``).
+    A per-worker dir removes the contention; the cost is that each worker builds its own,
+    which importing the library in the controller pre-fork avoids entirely (README,
+    "First-import caches"). Overriding these three vars for the run is deliberate — a shared
+    warm cache the user configured is exactly what races when it is cold in CI.
+    """
+    env = os.environ if env is None else env
+    home = Path(root) / worker_id
+    env["MPLCONFIGDIR"] = str(home / "mpl")
+    env["NUMBA_CACHE_DIR"] = str(home / "numba")
+    compiledir = home / "pytensor"
+    existing = env.get("PYTENSOR_FLAGS", "")
+    env["PYTENSOR_FLAGS"] = (
+        f"{existing},base_compiledir={compiledir}" if existing else f"base_compiledir={compiledir}"
+    )
 
 
 def _save_child_coverage() -> None:
