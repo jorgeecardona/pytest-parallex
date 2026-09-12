@@ -27,3 +27,6 @@ uv.lock.bak
 # Local session logs
 logs/
 site/
+
+# Personal/machine-specific agent notes (never committed)
+CLAUDE.local.md
