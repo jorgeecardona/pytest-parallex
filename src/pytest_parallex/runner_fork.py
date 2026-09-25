@@ -252,11 +252,15 @@ class ForkRunner:
         # Nor may it print. The child inherited the controller's terminal reporter, still
         # wired to the same stdout, so it wrote its own progress there *and* the controller
         # wrote the same reports again when it replayed them: three failures printed
-        # 'FFFFFF'. Unregistering leaves exactly one writer for the terminal — the
-        # controller, replaying — and the child reporting solely through its report file.
+        # 'FFFFFF'. We can't unregister it — pytest's assertion diff fetches the syntax
+        # highlighter via config.get_terminal_writer(), which asserts the plugin exists, so
+        # removing it turns every '==' failure into a bare AssertionError. Instead we point
+        # its writer at /dev/null: the reporter stays registered and get_terminal_writer()
+        # keeps working, but nothing the child writes reaches the shared stdout. The
+        # controller, replaying, remains the only real writer.
         terminal = self.config.pluginmanager.getplugin("terminalreporter")
         if terminal is not None:
-            self.config.pluginmanager.unregister(terminal)
+            terminal._tw = type(terminal._tw)(file=Path(os.devnull).open("w"))  # type: ignore[attr-defined]  # noqa: SIM115
 
         collector = ReportCollector()
         self.config.pluginmanager.register(collector, "parallex-report-collector")

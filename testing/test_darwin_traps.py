@@ -4,9 +4,11 @@ Linux CI covers the guards' *mechanics* (test_plugin, test_forksafe_resolver, th
 end-to-end fakes in test_regressions). What it cannot cover is the traps themselves:
 these run only on a Mac and fork a fresh interpreter into the actual crash paths.
 
-Each trap gets a pair: a repro test proving the crash still exists (a canary — if an
-OS update fixes the trap, the repro fails and the guard can be reconsidered), and a
-survival test proving ``harden_darwin_fork_child`` defuses it.
+Each trap gets a pair: a repro test proving the crash still exists (a canary: if an OS
+or Python update fixes the trap, the repro *skips* with a message saying the guard can
+be reconsidered; it does not fail, because a fixed OS is not a plugin regression and
+must not block pushes from that machine), and a survival test proving
+``harden_darwin_fork_child`` defuses it.
 """
 
 from __future__ import annotations
@@ -85,10 +87,11 @@ def child():
     urllib.request.proxy_bypass("example.com")
 """
         )
-        assert fate.startswith("SIGNALED:"), (
-            f"child survived ({fate}) — has this macOS/Python fixed the _scproxy trap? "
-            f"If so the guard in harden_darwin_fork_child can be reconsidered."
-        )
+        if not fate.startswith("SIGNALED:"):
+            pytest.skip(
+                f"child survived ({fate}): has this macOS/Python fixed the _scproxy trap? "
+                f"If so the guard in harden_darwin_fork_child can be reconsidered."
+            )
 
     def test_hardened_child_survives_proxy_lookup(self) -> None:
         fate = _run_forking_script(
@@ -112,7 +115,7 @@ class TestDnsTrap:
         Bimodal, measured here: a parent is either poisoned at fork time (every child
         segfaults) or not (every child survives), at roughly 60/40 per fresh parent. So
         the repro retries across parent processes; all six surviving would put a still-
-        existing trap below a 0.5% false-fail — treat that as the trap actually gone.
+        existing trap below a 0.5% false-skip, so treat that as the trap actually gone.
         """
         _skip_without_dns()
         fates: list[str] = []
@@ -129,8 +132,8 @@ def child():
             fates.append(fate)
             if fate.startswith("SIGNALED:"):
                 return
-        pytest.fail(
-            f"every child survived ({fates}) — has this macOS/Python fixed the libinfo "
+        pytest.skip(
+            f"every child survived ({fates}): has this macOS/Python fixed the libinfo "
             f"trap? If so install_forksafe_getaddrinfo can be reconsidered."
         )
 

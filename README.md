@@ -1,5 +1,11 @@
 # pytest-parallex
 
+[![pipeline status](https://gitlab.com/jorgeecardona/pytest-parallex/badges/main/pipeline.svg)](https://gitlab.com/jorgeecardona/pytest-parallex/-/pipelines)
+[![PyPI version](https://img.shields.io/pypi/v/pytest-parallex.svg)](https://pypi.org/project/pytest-parallex/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pytest-parallex.svg)](https://pypi.org/project/pytest-parallex/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-gitlab%20pages-blue.svg)](https://jorgeecardona.gitlab.io/pytest-parallex/)
+
 Run pytest in parallel with `scope="session"` fixtures that actually run once.
 
 ```bash
@@ -7,7 +13,7 @@ pip install pytest-parallex
 pytest --parallel=fork
 ```
 
-The draw is the fixture model — one container for the run instead of one per worker, and
+The draw is the fixture model: one container for the run instead of one per worker, and
 fixtures you write the obvious way. It's also usually [faster than xdist](#is-it-faster-than-xdist),
 because it forks warm instead of booting an interpreter per worker.
 
@@ -15,7 +21,7 @@ because it forks warm instead of booting an interpreter per worker.
 
 xdist starts each worker as a separate interpreter, and each one runs its own session. So a
 `scope="session"` fixture runs once per worker. The xdist docs say this and suggest a
-`FileLock` workaround. You can't fix it in your conftest — there's no point in xdist's
+`FileLock` workaround. You can't fix it in your conftest: there's no point in xdist's
 design where one process could build something and hand it to the others.
 
 Forking gives you that point. `--parallel=fork` collects the tests, runs your session
@@ -74,20 +80,20 @@ machine, fork tends to come out ahead. Measured on 16 cores:
 That last row used to be fork's worst: it dealt work by whole module, so a single big file
 ran on one worker while xdist spread it across all of them. Now a module whose tests use
 only function and session fixtures is dealt test-by-test, so it fills the machine like
-xdist does — minus the per-worker interpreter startup.
+xdist does, without the per-worker interpreter startup.
 
 The honest limit that remains: a module that owns a **module- or class-scoped fixture**
 stays on one worker, because that is what keeps the fixture set up once for the module.
 Such a module can't use more than one core no matter what you pass to `--parallel-workers`.
 If one giant module with a module fixture dominates your runtime, xdist (which re-runs that
-fixture per worker) can still spread it wider — at the cost of running it N times.
+fixture per worker) can still spread it wider, at the cost of running it N times.
 
 ## So why use it?
 
 Because `scope="session"` means session, and that gets you two things.
 
 **One copy of the resource, not N.** Eight xdist workers boot eight Postgres containers.
-That's 8x the memory, 8x the disk, 8x the pressure on the Docker daemon — and if you're
+That's 8x the memory, 8x the disk, 8x the pressure on the Docker daemon, and if you're
 paying per seat, per API call, or per licence, 8x that too. Here it's one, and each worker
 gets a database on it. The wall clock barely moves; the resource bill does.
 
@@ -99,8 +105,8 @@ convincing and were wrong before the numbers above were re-taken.
 
 ## Fork safety
 
-`fork()` only copies the calling thread. Whatever the other threads were holding — a lock,
-a half-written buffer, a connection mid-handshake — gets copied in that state and belongs
+`fork()` only copies the calling thread. Whatever the other threads were holding (a lock,
+a half-written buffer, a connection mid-handshake) gets copied in that state and belongs
 to nobody in the child. This is the usual way forked children deadlock, and CPython 3.12
 warns about it.
 
@@ -116,7 +122,7 @@ Logging `QueueListener` threads are the common case (litestar starts one at impo
 anything using `QueueHandler`), so those get stopped and restarted around the fork for you.
 
 This puts one constraint on a session fixture: what it builds has to survive a fork. An
-address survives — a URL, a path, a port. A live connection, a thread, or an event loop
+address survives: a URL, a path, a port. A live connection, a thread, or an event loop
 doesn't. So keep the server in the controller and open connections per worker:
 
 ```python
@@ -137,7 +143,7 @@ to the workers and you're back to xdist's behaviour.
 
 ## Fixtures that differ per worker
 
-Some session fixtures are supposed to differ between workers — usually one that gives each
+Some session fixtures are supposed to differ between workers, usually one that gives each
 worker its own database. Running that in the controller breaks things: every worker gets
 the same database, and a per-test `create_all`/`drop_all` wipes the other workers' schemas
 while they're using them.
@@ -163,7 +169,7 @@ def database_url(worker_id, postgres_server):   # per worker: asks for worker_id
 One container for the run, one database per worker on it. Under xdist you'd need the
 filelock recipe to approximate this.
 
-`worker_id` is xdist's fixture name and that's on purpose — it's what lets existing suites
+`worker_id` is xdist's fixture name and that's on purpose: it's what lets existing suites
 work unchanged. If you have both plugins installed, `--parallel` takes the name so you get
 a real per-worker id, and a plain `pytest -n 4` still gets xdist's. `parallex_worker_id` is
 an alias if you'd rather be explicit; it marks a fixture per-worker the same way.
@@ -202,29 +208,29 @@ def pytest_parallex_auto_num_workers(config):
   keeps the fixture set up once for it). Modules using only function and session fixtures
   are split across workers freely.
 - fork is Linux-first; on Windows use `--parallel=process`. **On macOS, forked children
-  can be killed by Apple frameworks** — you see a "Python quit unexpectedly" dialog per
+  can be killed by Apple frameworks**: you see a "Python quit unexpectedly" dialog per
   worker and `no tests ran`. Two distinct traps, diagnosed on a real suite:
 
   * **`_scproxy` segfault** (the one actually hit): urllib's proxy lookup calls the
-    SystemConfiguration framework, which is not fork-safe — botocore reaches it on every
+    SystemConfiguration framework, which is not fork-safe. botocore reaches it on every
     client creation, so any AWS test can trigger it ([CPython #105912](https://github.com/python/cpython/issues/105912),
     [bpo-31818](https://bugs.python.org/issue31818)). **The plugin disarms this one
     automatically in workers** by stubbing the `*_macosx_sysconf` leaves, which the
-    original functions resolve at call time — so it holds even for code that captured
+    original functions resolve at call time, so it holds even for code that captured
     `proxy_bypass` by value at import (botocore does), and even for tests that wipe
     `os.environ`. Verified on a 530-test suite: zero dead workers, and fork became the
     fastest configuration on the machine (30.0s vs xdist's 38.2s). Workers therefore see
-    "no proxy configured" — a worker that must exercise real macOS proxy discovery can't
+    "no proxy configured"; a worker that must exercise real macOS proxy discovery can't
     run under fork at all.
   * **The ObjC `+initialize` trap**: the runtime crashes a forked child touching a
     framework initialized pre-fork. Not disarmable from inside a running process;
     `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` (in your shell profile, before
-    Python starts) is Apple's escape hatch. Note it does **not** fix the `_scproxy` trap —
+    Python starts) is Apple's escape hatch. Note it does **not** fix the `_scproxy` trap:
     on the suite that hit this, it had no effect.
 
   This is why multiprocessing defaults to spawn on macOS since Python 3.8. If workers
   still die, `--parallel=process` is the dependable mode on macOS (530-test suite:
-  process 37.9s vs xdist 38.2s vs serial ~133s — you lose fork's shared session fixtures,
+  process 37.9s vs xdist 38.2s vs serial ~133s; you lose fork's shared session fixtures,
   not the parallelism).
 - thread and async don't get around the GIL. They help suites that wait, not suites that
   compute.
@@ -235,8 +241,8 @@ def pytest_parallex_auto_num_workers(config):
 Under fork, workers are forked children, and two things conspire to silently undercount:
 coverage restarts collection in a forked child only when told how, and the worker exits via
 `os._exit`, which skips the exit hook coverage saves from (the plugin saves explicitly for
-you). The working recipe — measured missing lines went from "everything workers ran" to
-zero:
+you). The working recipe, with which measured missing lines went from "everything workers
+ran" to zero:
 
 ```toml
 # pyproject.toml
@@ -253,12 +259,16 @@ The env var is coverage's own switch for measuring in child processes; without i
 `patch = fork` silently does nothing and every line that ran only in a worker counts as
 unexecuted. If your CI gates on coverage, set it in the job env.
 
+Under `--parallel=process`, each worker measures into its own `COVERAGE_FILE` and the
+controller combines them at session end, so `--cov-fail-under` is judged against the
+combined total, not against one worker's slice.
+
 ## First-import caches (matplotlib, numba, pytensor)
 
 Some libraries build a cache on the **first import in a process**: matplotlib's font cache
 (`MPLCONFIGDIR`), numba (`NUMBA_CACHE_DIR`), pytensor's compiledir (pymc). When several
 processes build the same cold cache at once they can trip over each other's half-written
-files — the same class of race the per-worker `COVERAGE_FILE` namespace fixes for coverage.
+files, the same class of race the per-worker `COVERAGE_FILE` namespace fixes for coverage.
 It is a CI-only shape: a developer's cache is warm from months of use, so it "passes locally,
 fails in CI" (a cold `MPLCONFIGDIR` with N forked importers reproduces "building the font
 cache" N times).
@@ -269,13 +279,13 @@ runs a test, and the controller deletes them at the end. The cost is that each w
 its own copy of the cache.
 
 To pay that build **once** instead of per worker, import the library in the controller before
-the fork — a hoisted `scope="session"` fixture (or a `pytest_parallex_setup` hook) does this,
+the fork. A hoisted `scope="session"` fixture (or a `pytest_parallex_setup` hook) does this,
 and every child then inherits the warm cache through the fork for free:
 
 ```python
 @pytest.fixture(scope="session", autouse=True)
 def _warm_import_caches():
-    import matplotlib.pyplot  # noqa: F401  — builds the font cache once, pre-fork
+    import matplotlib.pyplot  # noqa: F401  builds the font cache once, pre-fork
 ```
 
 `--parallel=process` starts a fresh interpreter per worker, so there is no pre-fork controller
@@ -290,6 +300,10 @@ make install-hooks     # one-time, after cloning
 make check             # lint + typecheck + test, same as CI
 ```
 
+See [CONTRIBUTING.md](https://gitlab.com/jorgeecardona/pytest-parallex/-/blob/main/CONTRIBUTING.md)
+for the full loop, and file issues at
+<https://gitlab.com/jorgeecardona/pytest-parallex/-/issues>.
+
 ## Releasing
 
 The version in `pyproject.toml` is the source of truth, and releases are automated:
@@ -300,9 +314,9 @@ The version in `pyproject.toml` is the source of truth, and releases are automat
 2. `version-guard` enforces the same rule in CI, so `--no-verify` and unhooked clones don't
    get around it.
 3. `:release` runs on a green `main` pipeline and publishes via OIDC trusted publishing if
-   the version isn't on PyPI yet. Merging a version bump to `main` is the release — no tag,
+   the version isn't on PyPI yet. Merging a version bump to `main` is the release: no tag,
    no second pipeline.
 
 ## License
 
-MIT
+MIT © Jorge Cardona. See [LICENSE](LICENSE).

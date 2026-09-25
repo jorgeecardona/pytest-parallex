@@ -634,6 +634,21 @@ class TestForkOutput:
         result.stdout.fnmatch_lines(["*3 passed*"])
         assert result.stdout.str().count("CONTROLLER_MARKER") == 1
 
+    def test_assertion_diff_survives_in_a_worker(self, pytester: pytest.Pytester) -> None:
+        """A failing == in a worker must still print pytest's comparison diff.
+
+        The child silences its inherited terminalreporter so it doesn't double-write to the
+        shared stdout. Unregistering the plugin (the old approach) also broke
+        config.get_terminal_writer(), which pytest_assertrepr_compare calls to fetch the
+        syntax highlighter: the plugin asserts it is registered, so every == failure came
+        out as a bare AssertionError with the left/right values hidden. Redirecting the
+        reporter's writer to devnull keeps the accessor working; the diff comes back.
+        """
+        pytester.makepyfile("def test_diff(): assert [1, 2, 3] == [1, 3, 2]")
+        result = pytester.runpytest("--parallel=fork", "--parallel-workers=2")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*At index 1 diff: 2 != 3*"])
+
 
 class TestProcessArgForwarding:
     def test_user_args_reach_the_worker(self, pytester: pytest.Pytester) -> None:
