@@ -7,7 +7,7 @@ import threading
 # Kept in lockstep with pyproject.toml by scripts/bump-version; pyproject stays the
 # release trigger (version-guard and the publish check read it). A test asserts the two
 # never drift.
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 _worker_id_local = threading.local()
 
