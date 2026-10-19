@@ -378,9 +378,9 @@ make install-hooks     # one-time, after cloning
 make check             # lint + typecheck + test, same as CI
 ```
 
-The version is `version` in `pyproject.toml`; the pre-commit hook bumps it when a commit
-touches `src/`, and merging that bump to `main` is the release (OIDC trusted publishing, no
-tag, no manual step).
+The version is `__version__` in `src/pytest_parallex/__init__.py`; the pre-commit hook bumps
+it when a commit touches `src/`, and merging that bump to `main` is the release (OIDC trusted
+publishing, no tag, no manual step).
 
 ## License
 

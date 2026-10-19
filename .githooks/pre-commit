@@ -5,9 +5,9 @@
 #
 # Two jobs only (the test suite is deferred to pre-push to keep commits quick):
 #   1. Auto-bump the patch version when the shipped Python source (src/**/*.py)
-#      changes, so pyproject's version -- the single source of truth -- advances
-#      with every code change. Doc/notes (incl. src/*.md)/test/example/config-only
-#      commits do not bump.
+#      changes, so __version__ in src/pytest_parallex/__init__.py -- the single source
+#      of truth (pyproject reads it via [tool.hatch.version]) -- advances with every
+#      code change. Doc/notes (incl. src/*.md)/test/example/config-only commits do not bump.
 #   2. Lint the staged Python with ruff (the same linter CI runs).
 
 set -euo pipefail
@@ -17,21 +17,19 @@ mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
 [[ ${#staged[@]} -eq 0 ]] && exit 0
 
 # 1. auto-bump patch when the shipped Python source changed -- src/**/*.py only,
-#    so any notes/docs that ever land under src/ don't trigger a release.
-#    (bump-version also refreshes uv.lock's pinned version, so stage both to keep
-#    the commit self-consistent.)
+#    so any notes/docs that ever push under src/ don't trigger a release.
+#    (The version is dynamic, so only src/pytest_parallex/__init__.py moves -- uv.lock is untouched.)
 if printf '%s\n' "${staged[@]}" | grep -qE '^src/.*\.py$'; then
-    # ...unless the version line is already moving in this commit. `make bump TYPE=minor`
+    # ...unless __version__ is already moving in this commit. `make bump TYPE=minor`
     # followed by a commit that also touches src/ would otherwise bump twice: once by
     # hand, once here. That silently skips a version (0.1.1 -> 0.1.2 -> 0.1.3), and worse,
     # it turns a deliberate `TYPE=minor` into a minor+patch. The invariant this hook
     # actually wants is "the version moved", not "this hook moved it".
-    if git diff --cached -- pyproject.toml | grep -qE '^\+version = "'; then
+    if git diff --cached -- src/pytest_parallex/__init__.py | grep -qE '^\+__version__ = "'; then
         echo "pre-commit: version already bumped in this commit -- leaving it alone"
     else
         ./scripts/bump-version patch
-        # __init__.py carries the mirrored __version__ (see scripts/bump-version)
-        git add pyproject.toml uv.lock src/pytest_parallex/__init__.py
+        git add src/pytest_parallex/__init__.py
     fi
 fi
 

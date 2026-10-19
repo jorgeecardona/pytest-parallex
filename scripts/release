@@ -1,14 +1,16 @@
 #!/bin/sh
 # Release driver, invoked by the `release` moon task (deps `ci`) which the CI job runs
 # on the default branch. Idempotent:
-#   - if pyproject's version is already on PyPI -> no-op (safe on every main pipeline)
+#   - if the package version is already on PyPI -> no-op (safe on every main pipeline)
 #   - else publish it to PyPI via OIDC (scripts/pypi-publish) -- this IS the release
 # Publishing needs no token (OIDC Trusted Publishing); there is no git tag step.
 set -e
 cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
 
-V="$(grep -E '^version = "' pyproject.toml | head -1 | cut -d'"' -f2)"
-[ -n "$V" ] || { echo "release: could not read version from pyproject.toml" >&2; exit 1; }
+# Read the single source of truth (src/pytest_parallex/__init__.py's __version__); pyproject's version
+# is dynamic (hatchling derives it from this literal), so it no longer carries a static line to grep.
+V="$(grep -E '^__version__ = "' src/pytest_parallex/__init__.py | head -1 | cut -d'"' -f2)"
+[ -n "$V" ] || { echo "release: could not read __version__ from src/pytest_parallex/__init__.py" >&2; exit 1; }
 
 # Already on PyPI? Then this version is released; nothing to do.
 if uv run python - "$V" <<'PY'

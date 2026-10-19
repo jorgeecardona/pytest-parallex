@@ -2,7 +2,7 @@
 # pytest-parallex — parallel test execution where scope="session" means session:
 # the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
-version = "0.2.5"
+dynamic = ["version"]  # the single source of truth is __version__ in src/pytest_parallex/__init__.py (see [tool.hatch.version])
 # Kept short: this is the one-line blurb in PyPI search results, which truncates around
 # 100-150 chars. The old one ran to 164 and got cut mid-sentence.
 description = "Parallel pytest where session fixtures run once for the whole run, not once per worker"
@@ -61,11 +61,22 @@ Documentation = "https://cardona-oss.gitlab.io/pytest-parallex/"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+# The version lives as __version__ in the package itself; hatchling reads it (by regex, no import) so
+# pyproject and the runtime never disagree. scripts/bump-version rewrites that literal.
+path = "src/pytest_parallex/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pytest_parallex"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src", "testing", "docs", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.uv]
+# After the pre-commit hook auto-bumps __version__ in the package __init__, uv must treat the
+# editable install as stale and reinstall it; without the __init__ key the next `make check`
+# runs against the old version. (pyproject is already an implicit key; __init__ is the version source.)
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/pytest_parallex/__init__.py" }]
 
 [dependency-groups]
 # pytest-xdist is a *test* dependency, not a competitor we forgot to remove: the suite

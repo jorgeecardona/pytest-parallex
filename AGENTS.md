@@ -38,7 +38,7 @@ Layout: `src/pytest_parallex/` is the package (`plugin.py` registers options, fi
 
 ## Gotchas
 
-- The version is the `version` field in `pyproject.toml` (the single source of truth). The pre-commit hook auto-bumps the patch version when `src/**/*.py` changes, and CI's `version-guard` enforces that a `src/` change carries a bump. Do not edit versions by hand; `make bump TYPE=minor|major` for a deliberate larger bump.
+- The version is the `__version__` literal in `src/pytest_parallex/__init__.py`; hatchling reads it so `pyproject.toml` never disagrees. The pre-commit hook auto-bumps the patch version when `src/**/*.py` changes, and CI's `version-guard` enforces that a `src/` change carries a bump. Do not edit versions by hand; `make bump TYPE=minor|major` for a deliberate larger bump.
 - Merging a version bump to `main` is the release: `:release` publishes to PyPI via OIDC Trusted Publishing if that version is not there yet. No tag, no manual step.
 - `docs/index.md` and `docs/changelog.md` are `--8<--` snippet includes of `README.md` and `CHANGELOG.md`, so an edit to either file changes the published site, and a broken link in them fails `mkdocs build --strict`.
 - The fork worker must not unregister the `terminalreporter` plugin: pytest's assertion diff calls `config.get_terminal_writer()`, which asserts it exists. The worker silences it by redirecting its `_tw` to `/dev/null` instead (`runner_fork.py`).

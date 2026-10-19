@@ -30,3 +30,7 @@ uv.lock.bak
 # Local session logs
 logs/
 site/
+
+# Personal, machine-specific agent overrides (AGENTS.md is tracked)
+AGENTS.local.md
+CLAUDE.local.md

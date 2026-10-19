@@ -1,6 +1,6 @@
 #!/bin/sh
-# Bump the project version in pyproject.toml -- the single source of truth that
-# hatchling builds from and that the release tag must match.
+# Bump __version__ in src/pytest_parallex/__init__.py -- the single source of truth that hatchling
+# reads (pyproject's version is dynamic, via [tool.hatch.version] path) and that the release must match.
 #
 # Usage: ./scripts/bump-version [patch|minor|major]   (default: patch)
 #
@@ -11,10 +11,11 @@ set -e
 cd "$(dirname "$0")/.."
 
 BUMP_TYPE="${1:-patch}"
+VERSION_FILE="src/pytest_parallex/__init__.py"
 
-CURRENT=$(grep -E '^version = "' pyproject.toml | head -1 | sed -E 's/^version = "(.*)"/\1/')
+CURRENT=$(grep -E '^__version__ = "' "$VERSION_FILE" | head -1 | sed -E 's/^__version__ = "([^"]*)".*/\1/')
 if [ -z "$CURRENT" ]; then
-    echo "bump-version: could not read 'version = \"...\"' from pyproject.toml" >&2
+    echo "bump-version: could not read '__version__ = \"...\"' from $VERSION_FILE" >&2
     exit 1
 fi
 
@@ -33,20 +34,15 @@ case "$BUMP_TYPE" in
 esac
 
 NEW="${MAJOR}.${MINOR}.${PATCH}"
+# Rewrite via a temp file rather than `sed -i`: GNU takes no suffix, BSD/macOS
+# requires one and would otherwise consume `-E` as the backup suffix, leaving a
+# stray backup file. A temp file + mv is portable and leaves no backup. Only the
+# quoted version is replaced, so any trailing comment on the line survives.
+TMP=$(mktemp)
+sed -E "s/^__version__ = \"${CURRENT}\"/__version__ = \"${NEW}\"/" "$VERSION_FILE" > "$TMP"
+mv "$TMP" "$VERSION_FILE"
 
-# No `sed -i`: BSD sed reads the flag after -i as the backup suffix, so `-i -E`
-# litters `<file>-E` backups on macOS. A temp file behaves the same everywhere.
-replace() {
-    sed -E "s/^$2 = \"${CURRENT}\"/$2 = \"${NEW}\"/" "$1" > "$1.tmp" && mv "$1.tmp" "$1"
-}
-replace pyproject.toml version
-# __version__ in the package mirrors pyproject (testing/test_plugin.py asserts they match).
-replace src/pytest_parallex/__init__.py __version__
-
-# Keep uv.lock's pinned pytest-parallex version in sync so the working tree stays clean
-# (offline + cached = fast; online fallback for a cold cache).
-if command -v uv >/dev/null 2>&1; then
-    uv lock --offline >/dev/null 2>&1 || uv lock >/dev/null 2>&1 || true
-fi
+# No uv.lock sync needed: the version is dynamic (hatchling reads __version__), so uv.lock records
+# pytest-parallex as an editable path with no pinned version -- bumping the literal leaves the lock untouched.
 
 echo "bump-version: ${CURRENT} -> ${NEW}"

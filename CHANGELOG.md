@@ -1,9 +1,10 @@
 # Changelog
 
 All notable changes to pytest-parallex are documented here. Versioning is
-[SemVer](https://semver.org/); the version in `pyproject.toml` is the single source of truth
-and is bumped automatically when shipped source changes. Merging a version bump to `main`
-publishes it (see "Releasing" in the README).
+[SemVer](https://semver.org/); the version is `__version__` in
+`src/pytest_parallex/__init__.py` (hatchling reads it) and is bumped automatically when
+shipped source changes. Merging a version bump to `main` publishes it (see "Releasing" in the
+README).
 
 ## [Unreleased]
 

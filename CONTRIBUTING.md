@@ -67,10 +67,11 @@ assert the child dies; they are skipped everywhere else.
 
 ## Versioning
 
-The version is the `version` field in `pyproject.toml` (the single source of truth). Do not
-edit it by hand: the pre-commit hook auto-bumps the patch version when anything under
-`src/**/*.py` changes, and CI's `version-guard` enforces that a `src/` change carries a bump.
-Use `make bump TYPE=minor|major` for a deliberate larger bump.
+The version is the `__version__` literal in `src/pytest_parallex/__init__.py`, which
+hatchling reads so `pyproject.toml` never disagrees. Do not edit it by hand: the pre-commit
+hook auto-bumps the patch version when anything under `src/**/*.py` changes, and CI's
+`version-guard` enforces that a `src/` change carries a bump. Use `make bump TYPE=minor|major`
+for a deliberate larger bump.
 
 ## Changelog
 

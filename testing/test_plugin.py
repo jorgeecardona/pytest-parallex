@@ -8,10 +8,9 @@ import pytest
 def test_dunder_version_matches_the_package_metadata() -> None:
     """``pytest_parallex.__version__`` must equal the installed version.
 
-    The literal in __init__.py exists for humans (`pytest_parallex.__version__` at a
-    REPL); pyproject stays the release trigger. scripts/bump-version rewrites both, and
-    this is the guard for the day someone edits one by hand: the mirror is only safe
-    because drifting fails CI.
+    The literal in src/pytest_parallex/__init__.py is the single source of truth: pyproject's
+    version is dynamic (`[tool.hatch.version] path = ...`), so hatchling reads the installed
+    metadata back from that same literal. This asserts the build backend is wired to it.
     """
     import importlib.metadata
 
