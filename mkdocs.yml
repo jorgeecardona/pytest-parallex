@@ -1,8 +1,8 @@
 site_name: pytest-parallex
 site_description: Parallel pytest where session fixtures run once for the whole run, not once per worker.
-site_url: https://jorgeecardona.gitlab.io/pytest-parallex/
-repo_url: https://gitlab.com/jorgeecardona/pytest-parallex
-repo_name: jorgeecardona/pytest-parallex
+site_url: https://cardona-oss.gitlab.io/pytest-parallex/
+repo_url: https://gitlab.com/cardona-oss/pytest-parallex
+repo_name: cardona-oss/pytest-parallex
 copyright: MIT &copy; Jorge Cardona
 
 theme:

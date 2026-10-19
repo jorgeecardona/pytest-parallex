@@ -10,7 +10,7 @@ publishes it (see "Releasing" in the README).
 ### Fixed
 
 - **Fork mode: a failing `==` in a worker prints pytest's comparison diff again**
-  ([#2](https://gitlab.com/jorgeecardona/pytest-parallex/-/issues/2)). The worker
+  ([#2](https://gitlab.com/cardona-oss/pytest-parallex/-/issues/2)). The worker
   unregistered the `terminalreporter` plugin to keep from writing progress to the shared
   stdout, but pytest's `assertrepr_compare` fetches its syntax highlighter through
   `config.get_terminal_writer()`, which asserts that plugin is registered. Every failing
@@ -24,7 +24,7 @@ publishes it (see "Releasing" in the README).
 ### Fixed
 
 - **Fork mode: private first-import cache dirs per worker**
-  ([#1](https://gitlab.com/jorgeecardona/pytest-parallex/-/issues/1)). matplotlib, numba and
+  ([#1](https://gitlab.com/cardona-oss/pytest-parallex/-/issues/1)). matplotlib, numba and
   pytensor build a cache on the first import in a process; N forked workers importing into
   one cold shared dir raced on half-written files and could crash. Each worker now gets its
   own `MPLCONFIGDIR`, `NUMBA_CACHE_DIR` and pytensor `base_compiledir`, and the controller

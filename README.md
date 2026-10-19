@@ -1,10 +1,10 @@
 # pytest-parallex
 
-[![pipeline status](https://gitlab.com/jorgeecardona/pytest-parallex/badges/main/pipeline.svg)](https://gitlab.com/jorgeecardona/pytest-parallex/-/pipelines)
+[![pipeline status](https://gitlab.com/cardona-oss/pytest-parallex/badges/main/pipeline.svg)](https://gitlab.com/cardona-oss/pytest-parallex/-/pipelines)
 [![PyPI version](https://img.shields.io/pypi/v/pytest-parallex.svg)](https://pypi.org/project/pytest-parallex/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pytest-parallex.svg)](https://pypi.org/project/pytest-parallex/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-gitlab%20pages-blue.svg)](https://jorgeecardona.gitlab.io/pytest-parallex/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-gitlab%20pages-blue.svg)](https://cardona-oss.gitlab.io/pytest-parallex/)
 
 Run pytest in parallel with `scope="session"` fixtures that actually run once.
 
@@ -14,10 +14,10 @@ pytest --parallel=fork
 ```
 
 The draw is the fixture model: one container for the run instead of one per worker, and
-fixtures you write the obvious way. It's also usually [faster than xdist](#is-it-faster-than-xdist),
+fixtures you write the obvious way. It is also usually [faster than xdist](#is-it-faster-than-xdist),
 because it forks warm instead of booting an interpreter per worker.
 
-## Why
+## Why pytest-parallex
 
 xdist starts each worker as a separate interpreter, and each one runs its own session. So a
 `scope="session"` fixture runs once per worker. The xdist docs say this and suggest a
@@ -38,14 +38,85 @@ $ pytest --parallel=fork --parallel-workers=4  # pytest-parallex
 8 passed        session fixture ran 1 time
 ```
 
+`scope="session"` meaning session gets you two things:
+
+- **One copy of the resource, not N.** Eight xdist workers boot eight Postgres containers:
+  8x the memory, 8x the disk, 8x the pressure on the Docker daemon, and if you pay per seat,
+  per API call, or per licence, 8x that too. Here it's one, and each worker gets a database
+  on it. The wall clock barely moves; the resource bill does.
+- **You write the fixture the obvious way.** No `FileLock`, no shared tmpdir, no "am I worker
+  gw0" branch. The fixture that says it runs once runs once.
+
+What it does not do:
+
+- **Fork everywhere.** Fork is Linux-first. Windows needs `--parallel=process`; macOS works
+  with hardening but `process` is the dependable mode there (see [Limitations](#limitations)).
+- **Split a module that owns a module- or class-scoped fixture.** That module stays on one
+  worker; that is what keeps its fixture set up once.
+- **Get around the GIL.** `thread` and `async` help suites that wait, not suites that compute.
+- **Stop early on `--maxfail`** under fork. The count is right; the run is not cut short.
+
+## Install
+
+```bash
+pip install pytest-parallex      # or: uv add --dev pytest-parallex
+```
+
+Python 3.10+, pytest 8.1+. The only runtime dependency is pytest.
+
+## Quickstart
+
+One Postgres container for the whole run, every worker inherits its URL:
+
 ```python
+# conftest.py
+import pytest
+from testcontainers.postgres import PostgresContainer
+
+
 @pytest.fixture(scope="session")
-def postgres():
-    with PostgresContainer("postgres:16") as pg:   # runs once
+def db_url():
+    with PostgresContainer("postgres:16") as pg:   # runs once, in the controller
         yield pg.get_connection_url()              # every worker gets this URL
 ```
 
-One container, one login, one compiled asset per run, and no lockfile.
+```bash
+pytest --parallel=fork --parallel-workers=4
+```
+
+The run ends with one line of ground truth about what the plugin actually did:
+
+```
+pytest-parallex fork: 4 worker(s), 8 claim(s) | session fixtures: 1 hoisted
+```
+
+`hoisted` is the count of session fixtures that ran once in the controller; `per-worker` counts
+the ones deliberately left to the workers (see [Fixtures that differ per worker](#fixtures-that-differ-per-worker)).
+If a fixture could not be set up pre-fork the line says
+`N FAILED to hoist (ran per-worker; PARALLEX_TRACE=1 for why)`; set `PARALLEX_TRACE=1` to see
+the reason on stderr.
+
+## Key features
+
+- **Session fixtures run once.** Hoisted into the controller before the fork, inherited by every
+  worker through copy-on-write.
+- **Per-worker fixtures when you want them.** Ask for `worker_id` and the fixture stays in the
+  workers. It is xdist's fixture name on purpose, so existing suites work unchanged.
+- **Four modes.** `fork`, `thread`, `async`, `process`; `--parallel-workers` defaults to `auto`
+  (CPU count).
+- **Fork-safety check.** Refuses to fork over a non-main thread and names it. Logging
+  `QueueListener` threads are stopped and restarted around the fork for you.
+- **macOS hardening.** The `_scproxy` proxy lookup and libinfo DNS resolution
+  (`socket.getaddrinfo`), the two paths that segfault a forked child, are disarmed in workers
+  automatically.
+- **Test-by-test dealing.** A module with only function and session fixtures is spread across
+  all workers, so one big file fills the machine.
+- **Coverage that counts worker lines.** Explicit save in forked workers; per-worker
+  `COVERAGE_FILE` combined on the controller in process mode.
+- **Private first-import caches.** Each forked worker gets its own `MPLCONFIGDIR`,
+  `NUMBA_CACHE_DIR` and pytensor compiledir, so cold CI caches don't race.
+- **Hooks.** `pytest_parallex_setup`, `pytest_parallex_teardown`,
+  `pytest_parallex_auto_num_workers`.
 
 ## Modes
 
@@ -55,7 +126,7 @@ pytest --parallel=fork --parallel-workers=8
 
 | mode | isolation | `scope="session"` runs | use when |
 |---|---|---|---|
-| `fork` | process per worker, warm | once, in the controller | Linux (macOS: see the caveat below), process quiet at fork time |
+| `fork` | process per worker, warm | once, in the controller | Linux (macOS: see [Limitations](#limitations)), process quiet at fork time |
 | `thread` | shared address space | once | tests are I/O-bound and don't mind sharing globals |
 | `async` | shared address space | once | same as `thread`, driven from an event loop |
 | `process` | fresh interpreter per worker | once per worker | tests mutate process-global state, Windows, or macOS |
@@ -88,20 +159,9 @@ Such a module can't use more than one core no matter what you pass to `--paralle
 If one giant module with a module fixture dominates your runtime, xdist (which re-runs that
 fixture per worker) can still spread it wider, at the cost of running it N times.
 
-## So why use it?
-
-Because `scope="session"` means session, and that gets you two things.
-
-**One copy of the resource, not N.** Eight xdist workers boot eight Postgres containers.
-That's 8x the memory, 8x the disk, 8x the pressure on the Docker daemon, and if you're
-paying per seat, per API call, or per licence, 8x that too. Here it's one, and each worker
-gets a database on it. The wall clock barely moves; the resource bill does.
-
-**You write the fixture the obvious way.** No `FileLock`, no shared tmpdir, no "am I worker
-gw0" branch. The fixture that says it runs once runs once.
-
-[docs/benchmarks.md](https://gitlab.com/jorgeecardona/pytest-parallex/-/blob/main/docs/benchmarks.md) has the method, and the measurements that looked
-convincing and were wrong before the numbers above were re-taken.
+[docs/benchmarks.md](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/docs/benchmarks.md)
+has the method, and the measurements that looked convincing and were wrong before the
+numbers above were re-taken.
 
 ## Fork safety
 
@@ -178,7 +238,7 @@ an alias if you'd rather be explicit; it marks a fixture per-worker the same way
 
 | fixture | gives you |
 |---|---|
-| `worker_id` | `'f0'`, `'w1'`, `'a2'`… or `'main'`. Asking for it marks a fixture per-worker |
+| `worker_id` | `'f0'`, `'w1'`, `'a2'`... or `'main'`. Asking for it marks a fixture per-worker |
 | `parallex_worker_id` | the same value, under a name xdist can't shadow |
 | `parallex_mode` | the active mode, or `None` |
 | `parallex_setup_data` | whatever `pytest_parallex_setup` returned |
@@ -204,14 +264,14 @@ def pytest_parallex_auto_num_workers(config):
 - `--maxfail` won't cut a fork run short. Workers finish the group they claimed and the
   controller replays the reports afterwards, so the count is right but the run isn't
   stopped early.
-- a module that owns a module- or class-scoped fixture runs on one worker (that's what
+- A module that owns a module- or class-scoped fixture runs on one worker (that's what
   keeps the fixture set up once for it). Modules using only function and session fixtures
   are split across workers freely.
-- fork is Linux-first; on Windows use `--parallel=process`. **On macOS, forked children
+- Fork is Linux-first; on Windows use `--parallel=process`. **On macOS, forked children
   can be killed by Apple frameworks**: you see a "Python quit unexpectedly" dialog per
-  worker and `no tests ran`. Two distinct traps, diagnosed on a real suite:
+  worker and `no tests ran`. Three distinct traps, diagnosed on real suites:
 
-  * **`_scproxy` segfault** (the one actually hit): urllib's proxy lookup calls the
+  * **`_scproxy` segfault**: urllib's proxy lookup calls the
     SystemConfiguration framework, which is not fork-safe. botocore reaches it on every
     client creation, so any AWS test can trigger it ([CPython #105912](https://github.com/python/cpython/issues/105912),
     [bpo-31818](https://bugs.python.org/issue31818)). **The plugin disarms this one
@@ -222,17 +282,22 @@ def pytest_parallex_auto_num_workers(config):
     fastest configuration on the machine (30.0s vs xdist's 38.2s). Workers therefore see
     "no proxy configured"; a worker that must exercise real macOS proxy discovery can't
     run under fork at all.
+  * **libinfo DNS segfault**: `socket.getaddrinfo` on a real hostname dies in a forked
+    child once the parent has resolved any hostname (pulling a container image is enough).
+    **Also disarmed automatically in workers**: numeric addresses stay on the real
+    `getaddrinfo`; real names resolve in a short-lived `python -I -c` subprocess, cached
+    per endpoint (one spawn per worker, ~50ms, once).
   * **The ObjC `+initialize` trap**: the runtime crashes a forked child touching a
     framework initialized pre-fork. Not disarmable from inside a running process;
     `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` (in your shell profile, before
-    Python starts) is Apple's escape hatch. Note it does **not** fix the `_scproxy` trap:
-    on the suite that hit this, it had no effect.
+    Python starts) is Apple's escape hatch. Note it does **not** fix the other two traps:
+    on the suites that hit them, it had no effect.
 
   This is why multiprocessing defaults to spawn on macOS since Python 3.8. If workers
   still die, `--parallel=process` is the dependable mode on macOS (530-test suite:
   process 37.9s vs xdist 38.2s vs serial ~133s; you lose fork's shared session fixtures,
   not the parallelism).
-- thread and async don't get around the GIL. They help suites that wait, not suites that
+- `thread` and `async` don't get around the GIL. They help suites that wait, not suites that
   compute.
 - Needs pytest 8.1 or newer. (8.0 changed the signature of an internal we rely on.)
 
@@ -292,7 +357,20 @@ def _warm_import_caches():
 to warm and no inherited cache; if a process-mode suite hits the same race, point each of those
 env vars at a per-worker path in your CI job.
 
-## Developing
+## Links
+
+- **Repository:** https://gitlab.com/cardona-oss/pytest-parallex
+- **PyPI:** https://pypi.org/project/pytest-parallex/
+- **Documentation:** <https://cardona-oss.gitlab.io/pytest-parallex/>
+- **Changelog:** [CHANGELOG.md](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/CHANGELOG.md)
+- **Issues:** <https://gitlab.com/cardona-oss/pytest-parallex/-/issues>
+
+## Contributing
+
+Toolchain, CI, and the release process live in
+[CONTRIBUTING.md](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/CONTRIBUTING.md);
+build and test detail for coding agents is in
+[AGENTS.md](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/AGENTS.md). In short:
 
 ```bash
 uv sync                # toolchain
@@ -300,23 +378,10 @@ make install-hooks     # one-time, after cloning
 make check             # lint + typecheck + test, same as CI
 ```
 
-See [CONTRIBUTING.md](https://gitlab.com/jorgeecardona/pytest-parallex/-/blob/main/CONTRIBUTING.md)
-for the full loop, and file issues at
-<https://gitlab.com/jorgeecardona/pytest-parallex/-/issues>.
-
-## Releasing
-
-The version in `pyproject.toml` is the source of truth, and releases are automated:
-
-1. The `pre-commit` hook bumps the patch version when a commit touches `src/` (run
-   `make install-hooks` once after cloning). Doc, test and config commits don't bump. For a
-   minor or major release, do it deliberately: `make bump TYPE=minor`.
-2. `version-guard` enforces the same rule in CI, so `--no-verify` and unhooked clones don't
-   get around it.
-3. `:release` runs on a green `main` pipeline and publishes via OIDC trusted publishing if
-   the version isn't on PyPI yet. Merging a version bump to `main` is the release: no tag,
-   no second pipeline.
+The version is `version` in `pyproject.toml`; the pre-commit hook bumps it when a commit
+touches `src/`, and merging that bump to `main` is the release (OIDC trusted publishing, no
+tag, no manual step).
 
 ## License
 
-MIT © Jorge Cardona. See [LICENSE](LICENSE).
+MIT © Jorge Cardona. See [LICENSE](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/LICENSE).

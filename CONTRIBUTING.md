@@ -67,10 +67,10 @@ assert the child dies; they are skipped everywhere else.
 
 ## Versioning
 
-The version lives only in `pyproject.toml` (mirrored into `src/pytest_parallex/__init__.py`
-by `scripts/bump-version`). Do not edit it by hand: the pre-commit hook auto-bumps the patch
-version when anything under `src/**/*.py` changes, and CI's `version-guard` enforces that a
-`src/` change carries a bump. Use `make bump TYPE=minor|major` for a deliberate larger bump.
+The version is the `version` field in `pyproject.toml` (the single source of truth). Do not
+edit it by hand: the pre-commit hook auto-bumps the patch version when anything under
+`src/**/*.py` changes, and CI's `version-guard` enforces that a `src/` change carries a bump.
+Use `make bump TYPE=minor|major` for a deliberate larger bump.
 
 ## Changelog
 
@@ -85,7 +85,7 @@ uses lowercase, area-prefixed subjects (for example
 
 ## Issues and merge requests
 
-- File issues at <https://gitlab.com/jorgeecardona/pytest-parallex/-/issues>.
+- File issues at <https://gitlab.com/cardona-oss/pytest-parallex/-/issues>.
 - Open merge requests against `main`. Make sure `make check` passes first.
 
 ## Releasing
@@ -97,4 +97,4 @@ Merging a version bump to `main` is the release.
 ## License
 
 By contributing, you agree that your contributions are licensed under the MIT License, the
-same terms as the project (see [LICENSE](LICENSE)).
+same terms as the project (see [LICENSE](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/LICENSE)).
