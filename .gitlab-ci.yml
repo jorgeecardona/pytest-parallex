@@ -63,6 +63,28 @@ ci:
         moon run :ci -c 1
       fi
 
+# The test suite on macOS (GitLab-hosted Apple-silicon runner). Linux CI can't see the macOS
+# fork traps: testing/test_darwin_traps.py reproduces the real ObjC +initialize and libinfo DNS
+# crashes and is skipped everywhere else. Runs the same moon `test` task as `ci`, so the command
+# still lives once in moon.yml. OBJC_DISABLE_INITIALIZE_FORK_SAFETY is deliberately NOT set: this
+# job tests what a macOS user gets by default. Independent of `ci` — it never gates a release.
+test-macos:
+  tags:
+    - saas-macos-medium-m1
+  image: macos-26-xcode-26
+  needs: []
+  variables:
+    UV_LINK_MODE: copy
+  before_script:
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    # Same GitHub-release fetch as `ci`, Apple-silicon build.
+    - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-aarch64-apple-darwin.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
+    - proto install                       # moon + uv, pinned in .prototools
+    - uv sync --frozen                    # uv fetches its own Python; the image's is not relied on
+  script:
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    - moon run :test -c 1
+
 # Publish the docs to GitLab Pages. A job named `pages` whose artifact is public/ is what
 # GitLab serves. Builds the same mkdocs site as the `docs` task (strict), but into public/.
 # main only; independent of `ci` (docs aren't gated on tests). Uses the uv image directly —
