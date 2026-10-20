@@ -23,7 +23,26 @@ workflow:
       when: never
     - if: $CI_COMMIT_BRANCH
 
+# Linux toolchain shared by `ci` and the version matrix: proto, then the pinned moon + uv.
+.linux-toolchain:
+  before_script:
+    # debian-slim is bare: bring what proto + pyright's bundled node (libatomic1) need.
+    - apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates unzip xz-utils bash libatomic1
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    # Fetch proto straight from its GitHub release. moonrepo.dev/install/proto.sh merely downloads
+    # this tarball, and the runner's access to moonrepo.dev is flaky (curl SSL timeouts); GitHub is
+    # reliable. `proto install` then pulls the pinned toolchain from each tool's own upstream, not
+    # moonrepo.
+    - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
+    - proto install                       # moon + uv, pinned in .prototools
+    - uv sync --frozen                    # ruff + pyright + pytest + pytest-xdist
+
 ci:
+  extends: .linux-toolchain
+  # Pinned so a uv bump can't move the release job's interpreter (uv 0.13 made 3.15 the
+  # default download). Newer Pythons are covered by the test-python matrix.
+  variables:
+    UV_PYTHON: "3.14"
   # OIDC Trusted Publishing: GitLab mints a short-lived id_token; scripts/pypi-publish
   # exchanges it for a one-shot PyPI token. The `pypi` environment matches the PyPI
   # publisher config (it is also recorded on non-publishing runs -- cosmetic only).
@@ -39,17 +58,6 @@ ci:
           - uv.lock
       paths:
         - .venv
-  before_script:
-    # debian-slim is bare: bring what proto + pyright's bundled node (libatomic1) need.
-    - apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates unzip xz-utils bash libatomic1
-    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
-    # Fetch proto straight from its GitHub release. moonrepo.dev/install/proto.sh merely downloads
-    # this tarball, and the runner's access to moonrepo.dev is flaky (curl SSL timeouts); GitHub is
-    # reliable. `proto install` then pulls the pinned toolchain from each tool's own upstream — not
-    # moonrepo.
-    - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
-    - proto install                       # moon + uv, pinned in .prototools
-    - uv sync --frozen                    # ruff + pyright + pytest + pytest-xdist
   script:
     # One moon invocation owns all interdependence. `-c 1` (serial) sidesteps the proto
     # temp-rename race a parallel fan-out can hit; `proto install` above also pre-warmed
@@ -63,31 +71,51 @@ ci:
         moon run :ci -c 1
       fi
 
-# The test suite on macOS (GitLab-hosted Apple-silicon runner). Linux CI can't see the macOS
-# fork traps: testing/test_darwin_traps.py reproduces the real ObjC +initialize and libinfo DNS
-# crashes and is skipped everywhere else. Runs the same moon `test` task as `ci`, so the command
-# still lives once in moon.yml. OBJC_DISABLE_INITIALIZE_FORK_SAFETY is deliberately NOT set: this
-# job tests what a macOS user gets by default. Independent of `ci` — it never gates a release.
+# The suite on every supported Python. `ci` runs it on whichever Python uv picks, and
+# `test-pytest-floor` covers 3.10, so this matrix covers 3.11 up to the newest release.
+# UV_PYTHON selects the interpreter for both `uv sync` and the moon `test` task; only-managed
+# makes it uv's own build rather than whatever the image ships. Never gates a release.
+test-python:
+  extends: .linux-toolchain
+  needs: []
+  parallel:
+    matrix:
+      - UV_PYTHON: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+  variables:
+    UV_PYTHON_PREFERENCE: only-managed
+  script:
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    - moon run :test -c 1
+
+# The suite on macOS (GitLab-hosted Apple-silicon runner), on each Python from 3.12 up. Linux
+# CI can't see the macOS fork traps: testing/test_darwin_traps.py reproduces the real ObjC
+# +initialize and libinfo DNS crashes and is skipped everywhere else. Same moon `test` task
+# as `ci`, so the command still lives once in moon.yml. OBJC_DISABLE_INITIALIZE_FORK_SAFETY is
+# deliberately not set: this job tests what a macOS user gets by default. Never gates a release.
 test-macos:
   tags:
     - saas-macos-medium-m1
   image: macos-26-xcode-26
   needs: []
+  parallel:
+    matrix:
+      - UV_PYTHON: ["3.12", "3.13", "3.14", "3.15"]
   variables:
     UV_LINK_MODE: copy
+    UV_PYTHON_PREFERENCE: only-managed    # the image ships an asdf Python; test uv's build instead
   before_script:
     - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
     # Same GitHub-release fetch as `ci`, Apple-silicon build.
     - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-aarch64-apple-darwin.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
     - proto install                       # moon + uv, pinned in .prototools
-    - uv sync --frozen                    # uv fetches its own Python; the image's is not relied on
+    - uv sync --frozen
   script:
     - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
     - moon run :test -c 1
 
 # Publish the docs to GitLab Pages. A job named `pages` whose artifact is public/ is what
 # GitLab serves. Builds the same mkdocs site as the `docs` task (strict), but into public/.
-# main only; independent of `ci` (docs aren't gated on tests). Uses the uv image directly —
+# main only; independent of `ci` (docs aren't gated on tests). Uses the uv image directly;
 # no proto/moon needed here.
 pages:
   image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim

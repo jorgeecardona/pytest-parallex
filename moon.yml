@@ -21,9 +21,11 @@ tasks:
     command: 'uv run pyright'
     inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
 
+  # UV_PYTHON picks the interpreter (CI's version matrix sets it); it is an input so a run on
+  # one Python is never served from the cache of a run on another.
   test:
     command: 'uv run pytest -q'
-    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml']
+    inputs: ['src/**/*.py', 'testing/**/*.py', 'pyproject.toml', '$UV_PYTHON']
 
   # The floor named in pyproject's `pytest>=8.1`, tested rather than asserted. This is a
   # pytest plugin reaching deep into pytest's internals, and those internals move between
