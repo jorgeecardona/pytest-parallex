@@ -1,0 +1,91 @@
+who: developer running a pytest suite in parallel
+
+needs:
+
+  - id: PX-1
+    text: >
+      When the developer runs the suite in parallel, they can rely on a scope="session" fixture body
+      running once for the whole run, not once per worker.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#key-features (Session fixtures run once)"}
+    proofs:
+      - "test:testing/test_regressions.py::TestFixtureCaching::test_session_fixture_body_runs_exactly_once"
+      - "test:testing/test_thread.py::TestThreadFixtures::test_session_fixture_body_runs_once"
+      - "test:testing/test_async.py::TestAsyncBasic::test_session_fixture_body_runs_once"
+
+  - id: PX-2
+    text: >
+      When a fixture asks for worker_id, the developer can get one copy of it per worker while the
+      session fixtures stay shared.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#fixtures-that-differ-per-worker"}
+    proofs:
+      - "test:testing/test_regressions.py::TestWorkerScopedFixtures::test_server_is_hoisted_but_per_worker_database_is_not"
+      - "test:testing/test_regressions.py::TestWorkerIdentity::test_worker_id_is_ours_not_xdists"
+
+  - id: PX-3
+    text: >
+      When the developer picks fork, thread, async or process mode, they can get the same outcomes as
+      a serial run.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#modes"}
+    proofs:
+      - "test:testing/test_regressions.py::TestReportingAgreement::test_outcomes_match_serial"
+      - "test:testing/test_regressions.py::TestFailureCounting::test_testsfailed_matches_the_number_of_failing_tests"
+      - "test:testing/test_plugin.py::TestOptions::test_invalid_mode_fails"
+
+  - id: PX-4
+    text: >
+      When a non-main thread is alive at fork time, the developer can see the run refuse to fork and
+      name the thread.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#fork-safety"}
+
+  - id: PX-5
+    text: >
+      When the developer runs fork mode on macOS, they can have workers survive proxy and DNS lookups.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#key-features (macOS hardening)"}
+    proofs:
+      - "test:testing/test_darwin_traps.py::TestScproxyTrap::test_hardened_child_survives_proxy_lookup"
+      - "test:testing/test_darwin_traps.py::TestDnsTrap::test_hardened_child_survives_dns_lookup"
+      - "test:testing/test_regressions.py::TestDarwinForkEndToEnd::test_children_are_hardened"
+
+  - id: PX-6
+    text: >
+      When a module has only function and session fixtures, the developer can see its tests spread
+      across workers, and a module with a module-scoped fixture stays on one worker.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#key-features (Test-by-test dealing)"}
+    proofs:
+      - "test:testing/test_regressions.py::TestForkFillsWorkers::test_a_pure_function_module_spreads_across_workers"
+      - "test:testing/test_regressions.py::TestForkFillsWorkers::test_a_module_fixture_module_is_not_split"
+
+  - id: PX-7
+    text: >
+      When the developer measures coverage of a parallel run, they can see lines executed in workers
+      counted, with the coverage gate applied once.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#key-features (Coverage that counts worker lines)"}
+    proofs:
+      - "test:testing/test_regressions.py::TestCoverageUnderFork::test_worker_executed_lines_are_counted"
+      - "test:testing/test_process.py::TestCoverageUnderProcess::test_gate_applies_once_to_the_combined_run"
+
+  - id: PX-8
+    text: >
+      When forked workers import matplotlib-style libraries, each worker can use its own first-import
+      cache directory, cleaned up after the run.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#key-features (Private first-import caches)"}
+    proofs:
+      - "test:testing/test_regressions.py::TestFirstImportCacheIsolation::test_each_worker_gets_a_private_cache_namespace"
+      - "test:testing/test_regressions.py::TestFirstImportCacheIsolation::test_the_cache_root_is_cleaned_up"
+
+  - id: PX-9
+    text: >
+      When the developer needs setup or teardown around workers, they can implement the
+      pytest_parallex_setup and pytest_parallex_teardown hooks.
+    sources:
+      - {kind: secondary, date: 2026-11-07, locator: "README.md#hooks"}

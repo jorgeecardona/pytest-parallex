@@ -34,3 +34,4 @@ site/
 # Personal, machine-specific agent overrides (AGENTS.md is tracked)
 AGENTS.local.md
 CLAUDE.local.md
+build/
