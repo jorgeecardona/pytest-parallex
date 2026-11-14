@@ -50,6 +50,7 @@ parallex = "pytest_parallex.plugin"
 docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
+    "mkdocs-llmstxt>=0.5",
 ]
 
 [project.urls]

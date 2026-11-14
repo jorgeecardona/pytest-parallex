@@ -1,5 +1,5 @@
 site_name: pytest-parallex
-site_description: Parallel pytest where session fixtures run once for the whole run, not once per worker.
+site_description: "pytest plugin for parallel test runs with session fixtures shared across workers."
 site_url: https://cardona-oss.gitlab.io/pytest-parallex/
 repo_url: https://gitlab.com/cardona-oss/pytest-parallex
 repo_name: cardona-oss/pytest-parallex
@@ -41,6 +41,14 @@ markdown_extensions:
 
 plugins:
   - search
+  - llmstxt:
+      markdown_description: "With --parallel=fork, pytest-parallex runs session fixtures once in a controller process and then forks warm workers that inherit them, so a session fixture runs once per run instead of once per worker."
+      full_output: llms-full.txt
+      sections:
+        Usage documentation:
+          - index.md
+          - benchmarks.md
+          - fork-safety-references.md
 
 nav:
   - Home: index.md
