@@ -8,6 +8,14 @@ README).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-14
+
+### Changed
+
+- Clearer PyPI summary and README opening, with working LICENSE links on PyPI.
+
+## [0.2.4] - 2026-09-25
+
 ### Fixed
 
 - **Fork mode: a failing `==` in a worker prints pytest's comparison diff again**

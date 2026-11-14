@@ -6,15 +6,15 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-gitlab%20pages-blue.svg)](https://cardona-oss.gitlab.io/pytest-parallex/)
 
-Run pytest in parallel with `scope="session"` fixtures that actually run once.
+Run pytest in parallel with `scope="session"` fixtures that run once per run.
 
 ```bash
 pip install pytest-parallex
 pytest --parallel=fork
 ```
 
-The draw is the fixture model: one container for the run instead of one per worker, and
-fixtures you write the obvious way. It is also usually [faster than xdist](#is-it-faster-than-xdist),
+The main reason to use it is the fixture model: one container for the run instead of one per
+worker, and fixtures you write the obvious way. It is also usually [faster than xdist](#is-it-faster-than-xdist),
 because it forks warm instead of booting an interpreter per worker.
 
 ## Why pytest-parallex
@@ -146,12 +146,11 @@ machine, fork tends to come out ahead. Measured on 16 cores:
 |---|---|---|---|
 | 4 modules, 64 quick tests | 1.39s | 0.33s | fork skips 16 interpreter boots |
 | 4 modules, 32 slow tests | 2.62s | 1.30s | ~2x |
-| 1 module, 16 slow tests | 2.02s | 0.76s | the case fork used to lose |
+| 1 module, 16 slow tests | 2.02s | 0.76s | one big module, split per test |
 
-That last row used to be fork's worst: it dealt work by whole module, so a single big file
-ran on one worker while xdist spread it across all of them. Now a module whose tests use
-only function and session fixtures is dealt test-by-test, so it fills the machine like
-xdist does, without the per-worker interpreter startup.
+In the last row, all 16 tests sit in one module. A module whose tests use only function and
+session fixtures is dealt test-by-test, so it fills the machine like xdist does, without the
+per-worker interpreter startup.
 
 The honest limit that remains: a module that owns a **module- or class-scoped fixture**
 stays on one worker, because that is what keeps the fixture set up once for the module.

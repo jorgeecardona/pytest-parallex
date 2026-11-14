@@ -5,7 +5,7 @@ name = "pytest-parallex"
 dynamic = ["version"]  # the single source of truth is __version__ in src/pytest_parallex/__init__.py (see [tool.hatch.version])
 # Kept short: this is the one-line blurb in PyPI search results, which truncates around
 # 100-150 chars. The old one ran to 164 and got cut mid-sentence.
-description = "Parallel pytest where session fixtures run once for the whole run, not once per worker"
+description = "pytest plugin for parallel test runs with session fixtures shared across workers"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
