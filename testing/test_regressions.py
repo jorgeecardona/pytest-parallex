@@ -861,3 +861,54 @@ class TestFirstImportCacheIsolation:
         root = (pytester.path / "root").read_text().strip()
         assert "pytest-parallex-caches-" in root
         assert not Path(root).exists(), f"controller left the cache root behind: {root}"
+
+
+class TestMaxWorkersCap:
+    """``PARALLEX_MAX_WORKERS`` is a ceiling on the worker count, for a machine that must not run on every core."""
+
+    _EIGHT_TESTS = "\n".join(f"def test_{n}(): assert True" for n in range(8))
+
+    def test_caps_an_explicit_worker_count(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PARALLEX_MAX_WORKERS", "2")
+        pytester.makepyfile(self._EIGHT_TESTS)
+        result = pytester.runpytest("--parallel=thread", "--parallel-workers=8")
+        result.assert_outcomes(passed=8)
+        result.stdout.fnmatch_lines(["*2 worker(s) (capped from 8 by PARALLEX_MAX_WORKERS=2)*"])
+
+    def test_caps_auto(self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PARALLEX_MAX_WORKERS", "1")
+        monkeypatch.setattr("os.cpu_count", lambda: 16)
+        pytester.makepyfile(self._EIGHT_TESTS)
+        result = pytester.runpytest("--parallel=thread")
+        result.stdout.fnmatch_lines(["*1 worker(s) (capped from 16 by PARALLEX_MAX_WORKERS=1)*"])
+
+    def test_a_cap_above_the_request_changes_nothing(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PARALLEX_MAX_WORKERS", "8")
+        pytester.makepyfile(self._EIGHT_TESTS)
+        result = pytester.runpytest("--parallel=thread", "--parallel-workers=2")
+        result.stdout.fnmatch_lines(["*pytest-parallex thread: 2 worker(s)"])
+        assert "capped" not in result.stdout.str()
+
+    @pytest.mark.parametrize("value", ["", "  "])
+    def test_empty_means_no_cap(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("PARALLEX_MAX_WORKERS", value)
+        pytester.makepyfile(self._EIGHT_TESTS)
+        result = pytester.runpytest("--parallel=thread", "--parallel-workers=4")
+        result.stdout.fnmatch_lines(["*pytest-parallex thread: 4 worker(s)"])
+        assert "capped" not in result.stdout.str()
+
+    @pytest.mark.parametrize("value", ["0", "-1", "abc", "auto", "1.5"])
+    def test_a_bad_value_is_a_usage_error(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("PARALLEX_MAX_WORKERS", value)
+        pytester.makepyfile(self._EIGHT_TESTS)
+        result = pytester.runpytest("--parallel=thread", "--parallel-workers=2")
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        result.stderr.fnmatch_lines(["*PARALLEX_MAX_WORKERS must be an integer >= 1*"])

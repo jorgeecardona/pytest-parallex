@@ -6,7 +6,7 @@ import threading
 
 # The single source of the version. hatchling reads this literal ([tool.hatch.version] in
 # pyproject.toml), and scripts/bump-version rewrites it.
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 _worker_id_local = threading.local()
 

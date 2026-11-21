@@ -8,6 +8,14 @@ shipped source changes. Merging a version bump to `main` publishes it (see
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-21
+
+### Added
+
+- `PARALLEX_MAX_WORKERS` sets a ceiling on the worker count. It lowers `--parallel-workers` and
+  `auto`, never raises them, and applies in all four modes. The summary line says when it lowered the
+  count. A value that is not an integer of 1 or more is a usage error.
+
 ## [0.2.7] - 2026-11-21
 
 ### Changed

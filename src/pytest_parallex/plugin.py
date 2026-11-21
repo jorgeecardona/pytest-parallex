@@ -114,7 +114,42 @@ def pytest_configure(config: pytest.Config) -> None:
     config.pluginmanager.register(runner, "parallel-runner")
 
 
+ENV_MAX_WORKERS = "PARALLEX_MAX_WORKERS"
+
+
+def _max_workers_cap() -> int | None:
+    """The ceiling from ``PARALLEX_MAX_WORKERS``, or None when it is unset or empty.
+
+    The ceiling belongs to the machine (a laptop that must not run on all cores), so it is an
+    environment variable and not an ini option: a committed value would also slow CI.
+    """
+    raw = os.environ.get(ENV_MAX_WORKERS, "").strip()
+    if not raw:
+        return None
+    try:
+        cap = int(raw)
+    except ValueError:
+        raise pytest.UsageError(f"{ENV_MAX_WORKERS} must be an integer >= 1, not {raw!r}") from None
+    if cap < 1:
+        raise pytest.UsageError(f"{ENV_MAX_WORKERS} must be an integer >= 1, not {cap}")
+    return cap
+
+
 def _resolve_worker_count(config: pytest.Config) -> int:
+    """Return the worker count, lowered to ``PARALLEX_MAX_WORKERS`` when that is set and smaller.
+
+    The requested count comes from ``--parallel-workers``, the auto hook or the CPU count. A lowered
+    count is kept in ``config._parallex_capped`` as ``(requested, cap)`` for the summary line.
+    """
+    requested = _requested_worker_count(config)
+    cap = _max_workers_cap()
+    if cap is not None and requested > cap:
+        config._parallex_capped = (requested, cap)  # type: ignore[attr-defined]
+        return cap
+    return requested
+
+
+def _requested_worker_count(config: pytest.Config) -> int:
     raw = config.getoption("parallel_workers")
     # `raw is None` shouldn't happen (the option defaults to "auto"), but getoption is
     # typed Any | None and None is exactly the value int() cannot take — so treat it as
@@ -240,6 +275,9 @@ def pytest_terminal_summary(
         return
 
     line = f"pytest-parallex {stats['mode']}: {stats['workers']} worker(s)"
+    capped = getattr(config, "_parallex_capped", None)
+    if capped is not None:
+        line += f" (capped from {capped[0]} by {ENV_MAX_WORKERS}={capped[1]})"
     if stats["mode"] == "fork":
         line += f", {stats['claims']} claim(s)"
         parts = [f"{stats['hoisted']} hoisted"]

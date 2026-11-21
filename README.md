@@ -157,6 +157,19 @@ pytest --parallel=fork --parallel-workers=8
 
 `--parallel-workers` defaults to `auto` (CPU count).
 
+To keep a machine from running on every core, set `PARALLEX_MAX_WORKERS` to a ceiling. It lowers
+`--parallel-workers` and `auto` to that number and never raises them. An empty value means no cap.
+Any value that is not an integer of 1 or more is a usage error.
+
+```bash
+export PARALLEX_MAX_WORKERS=2
+pytest --parallel=fork          # runs 2 workers on a 16-core machine
+```
+
+When the cap lowers the count, the summary says so:
+`pytest-parallex fork: 2 worker(s) (capped from 16 by PARALLEX_MAX_WORKERS=2), ...`.
+It limits workers only. Thread pools that a test starts itself (BLAS, Rust) are not covered.
+
 ## Is it faster than xdist?
 
 Usually yes, though speed isn't the main reason to reach for it.
