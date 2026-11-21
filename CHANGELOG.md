@@ -3,10 +3,27 @@
 All notable changes to pytest-parallex are documented here. Versioning is
 [SemVer](https://semver.org/); the version is `__version__` in
 `src/pytest_parallex/__init__.py` (hatchling reads it) and is bumped automatically when
-shipped source changes. Merging a version bump to `main` publishes it (see "Releasing" in the
-README).
+shipped source changes. Merging a version bump to `main` publishes it (see
+[Releasing](https://gitlab.com/cardona-oss/pytest-parallex/-/blob/main/CONTRIBUTING.md#releasing)).
 
 ## [Unreleased]
+
+## [0.2.7] - 2026-11-21
+
+### Changed
+
+- README and PyPI page: new header with the docs links, an Overview that states the platform
+  limits (fork mode is for Linux, macOS has caveats, Windows is not tested in CI), and a new
+  PyPI summary.
+- The benchmarks page starts with the current result against pytest-xdist. Older measurements
+  are marked as superseded.
+
+### Fixed
+
+- Docstrings: the fixture for `pytest_parallex_setup` data is `parallex_setup_data`;
+  `get_worker_id()` and `is_parallel_worker()` report a worker only in `thread` and `async`
+  modes (use the `worker_id` fixture in `fork` and `process` modes).
+- README: the pytest floor is 8.1 because of a change in pytest 8.1, not 8.0.
 
 ## [0.2.6] - 2026-11-14
 
@@ -14,12 +31,20 @@ README).
 
 - Clearer PyPI summary and README opening, with working LICENSE links on PyPI.
 
+## [0.2.5] - 2026-10-19
+
+### Changed
+
+- The project links on PyPI (Homepage, Repository, Issues, Changelog, Documentation) point to
+  the `cardona-oss` GitLab group. No code change.
+
 ## [0.2.4] - 2026-09-25
 
 ### Fixed
 
-- **Fork mode: a failing `==` in a worker prints pytest's comparison diff again**
-  ([#2](https://gitlab.com/cardona-oss/pytest-parallex/-/issues/2)). The worker
+- **Fork mode: a failing comparison in a worker prints its message and pytest's diff again**
+  ([#2](https://gitlab.com/cardona-oss/pytest-parallex/-/issues/2),
+  [#4](https://gitlab.com/cardona-oss/pytest-parallex/-/issues/4)). The worker
   unregistered the `terminalreporter` plugin to keep from writing progress to the shared
   stdout, but pytest's `assertrepr_compare` fetches its syntax highlighter through
   `config.get_terminal_writer()`, which asserts that plugin is registered. Every failing

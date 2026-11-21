@@ -1,5 +1,5 @@
 site_name: pytest-parallex
-site_description: "pytest plugin for parallel test runs with session fixtures shared across workers."
+site_description: "pytest plugin that runs tests in parallel by fork, so a session fixture runs once per run."
 site_url: https://cardona-oss.gitlab.io/pytest-parallex/
 repo_url: https://gitlab.com/cardona-oss/pytest-parallex
 repo_name: cardona-oss/pytest-parallex

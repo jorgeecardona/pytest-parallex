@@ -112,7 +112,7 @@ def schedule_by_scope(
     items: list[pytest.Item],
     num_workers: int,
 ) -> list[list[pytest.Item]]:
-    """STATIC module-grouped partition — deal every group up front, then run.
+    """STATIC module-grouped partition: deal every group up front, then run.
 
     Only for the thread/async runners, which share one address space and so cannot
     pull from a cross-process queue. Process-based runners should use
@@ -125,9 +125,9 @@ def schedule_by_scope(
 
     Groups are dealt to the worker holding the least so far (longest-processing-time-first,
     the standard greedy approximation). Note that "least" is still measured in tests, so
-    the guess above is what's being optimised — LPT bounds the damage at 4/3 of optimal
+    the guess above is what's being optimised. LPT bounds the damage at 4/3 of optimal
     *for the counts it was given*, which is only as good as count-as-proxy-for-time. Plain
-    round-robin over the sorted groups, which this used to do, has no such bound at all:
+    round-robin over the sorted groups has no such bound at all:
     with 4 workers it hands groups 0 and 4 to the same worker regardless of what the
     groups in between cost.
     """

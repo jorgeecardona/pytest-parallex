@@ -9,10 +9,10 @@ import pytest
 
 @pytest.hookspec(firstresult=True)
 def pytest_parallex_setup(config: pytest.Config) -> dict[str, Any] | None:
-    """Called once before parallel execution begins.
+    """Called once in the controller, before any worker starts.
 
-    Return serializable data that will be available via the
-    ``parallel_setup_data`` fixture in all workers.
+    Return serializable data. Tests read it through the ``parallex_setup_data`` fixture
+    in every worker.
     """
 
 
@@ -28,5 +28,6 @@ def pytest_parallex_teardown(config: pytest.Config, data: dict[str, Any]) -> Non
 def pytest_parallex_auto_num_workers(config: pytest.Config) -> int | None:
     """Return the number of workers for ``--parallel-workers=auto``.
 
-    The default implementation returns ``os.cpu_count()``.
+    The hook has no default implementation. When no plugin returns a value, the plugin
+    uses ``os.cpu_count()``.
     """

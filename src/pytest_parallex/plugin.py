@@ -123,9 +123,9 @@ def _resolve_worker_count(config: pytest.Config) -> int:
         try:
             n = int(raw)
         except (TypeError, ValueError):
-            # A UsageError, not the ValueError this used to raise. Anything raised from
-            # pytest_configure that isn't a UsageError comes out as an INTERNALERROR and
-            # a traceback through pytest's guts — for a typo in a flag.
+            # A UsageError, not a ValueError. Anything raised from pytest_configure that
+            # isn't a UsageError comes out as an INTERNALERROR and a traceback through
+            # pytest's internals, for a typo in a flag.
             raise pytest.UsageError(
                 f"--parallel-workers must be an integer or 'auto', not {raw!r}"
             ) from None

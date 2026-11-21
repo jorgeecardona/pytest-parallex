@@ -1,11 +1,11 @@
 [project]
-# pytest-parallex — parallel test execution where scope="session" means session:
+# pytest-parallex: parallel test execution where scope="session" means session:
 # the controller builds session fixtures once and forks warm workers that inherit them.
 name = "pytest-parallex"
 dynamic = ["version"]  # the single source of truth is __version__ in src/pytest_parallex/__init__.py (see [tool.hatch.version])
 # Kept short: this is the one-line blurb in PyPI search results, which truncates around
 # 100-150 chars. The old one ran to 164 and got cut mid-sentence.
-description = "pytest plugin for parallel test runs with session fixtures shared across workers"
+description = "pytest plugin that runs tests in parallel by fork, so a session fixture runs once per run"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

@@ -525,7 +525,7 @@ def _install_tolerant_current_test_var() -> None:
 
     def tolerant(item: pytest.Item, when: str | None) -> None:
         if when is None:
-            os.environ.pop("PYTEST_CURRENT_TEST", None)  # was pop(name) — raised on a race
+            os.environ.pop("PYTEST_CURRENT_TEST", None)  # a default, so a lost race cannot raise
         else:
             _original_current_test_var(item, when)
 

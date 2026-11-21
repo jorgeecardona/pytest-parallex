@@ -5,6 +5,11 @@ test workers. Every claim below is a verbatim quote from a primary source with a
 throughout: design from the docs, cite them, then verify with a canary; never discover documented
 behavior by canary.*
 
+**Research notes from before the design.** The plugin does not use `forkserver`. It calls
+`os.fork()` and refuses to fork while a non-main thread runs (see
+[Fork safety](index.md#fork-safety)). The conclusion below is what the sources recommend, not
+what the plugin does.
+
 **Bottom line:** the design "fork a pre-warmed parent that has already opened resources" is the exact
 pattern every primary source warns against. The salvage is `forkserver` +
 `set_forkserver_preload` (stdlib-blessed pre-warming that is single-threaded by construction), with
